@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v3.5-dia-semana';
+const APP_VERSION = 'v3.6-inconsistencias';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -164,6 +164,11 @@ const ControlePonto = () => {
   const [reportUser, setReportUser] = useState('');
   const [reportMonth, setReportMonth] = useState(String(nowParaDefaults.getMonth() + 1).padStart(2, '0'));
   const [reportYear, setReportYear] = useState(String(nowParaDefaults.getFullYear()));
+
+  // Estado para a tela de Inconsistências
+  const [inconsistencyUser, setInconsistencyUser] = useState('');
+  const [inconsistencyMonth, setInconsistencyMonth] = useState(String(nowParaDefaults.getMonth() + 1).padStart(2, '0'));
+  const [inconsistencyYear, setInconsistencyYear] = useState(String(nowParaDefaults.getFullYear()));
   
   // Estado de carregamento inicial e mensagens de erro (inline, não usa alert)
   const [isLoading, setIsLoading] = useState(true);
@@ -615,6 +620,41 @@ const ControlePonto = () => {
     return { user, dias, totalHorasTrabalhadas, totalHorasExtras };
   };
 
+  // Gera a lista de inconsistências (dias com 1 ou 3 marcações) de um
+  // funcionário no mês/ano selecionado, considerando apenas dias já
+  // encerrados (anteriores a hoje) — o dia atual, mesmo incompleto até agora,
+  // ainda pode receber novas marcações e não é considerado inconsistente.
+  const generateInconsistencies = () => {
+    if (!inconsistencyUser || !inconsistencyMonth || !inconsistencyYear) return null;
+
+    const user = users.find(u => u.id === inconsistencyUser);
+    const userRecords = timeRecords.filter(r => r.userId === inconsistencyUser);
+
+    const ano = parseInt(inconsistencyYear);
+    const mes = parseInt(inconsistencyMonth);
+    const diasNoMes = new Date(ano, mes, 0).getDate();
+
+    const hoje = new Date();
+    const hojeStr = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+
+    const inconsistencias = [];
+    for (let dia = 1; dia <= diasNoMes; dia++) {
+      const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+      if (dateStr >= hojeStr) continue; // ignora hoje e datas futuras
+
+      const metrics = getDayMetrics(dateStr, userRecords);
+      if (metrics.status !== 'incompleto') continue;
+
+      const motivo = metrics.saida === null && metrics.fimIntervalo === null
+        ? 'Apenas 1 marcação registrada (entrada) — faltam início/fim do intervalo e a saída'
+        : '3 marcações registradas (entrada, início e fim do intervalo) — falta a saída';
+
+      inconsistencias.push({ ...metrics, diaSemana: getDiaSemana(dateStr), motivo });
+    }
+
+    return { user, inconsistencias };
+  };
+
   const formatDate = (dateStr) => {
     const [year, month, day] = dateStr.split('-');
     return `${day}/${month}/${year}`;
@@ -864,6 +904,18 @@ const ControlePonto = () => {
                 >
                   <FileText className="inline w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
                   Relatórios
+                </button>
+
+                <button
+                  onClick={() => setActiveView('inconsistencies')}
+                  className={`px-3 sm:px-6 py-3 sm:py-4 text-sm sm:text-base font-medium transition-colors border-b-2 ${
+                    activeView === 'inconsistencies'
+                      ? 'border-indigo-600 text-indigo-600'
+                      : 'border-transparent text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <AlertTriangle className="inline w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
+                  Inconsistências
                 </button>
               </>
             )}
@@ -1362,6 +1414,114 @@ const ControlePonto = () => {
                   </div>
                   <div className="px-6 py-4 text-xs text-gray-400 border-t border-gray-100">
                     * Dias com apenas 2 marcações consideram 1 hora de intervalo automática. Dias com 1 ou 3 marcações aparecem como "incompleto" e não entram no somatório. Dias sem nenhuma marcação não entram no somatório.
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* Tela de Inconsistências */}
+        {activeView === 'inconsistencies' && currentUser?.profile === 'admin' && (
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900 mb-6">Inconsistências</h2>
+
+            <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+              <h3 className="text-lg font-semibold text-gray-800 mb-4">Buscar Inconsistências</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Funcionário</label>
+                  <select
+                    value={inconsistencyUser}
+                    onChange={(e) => setInconsistencyUser(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                  >
+                    <option value="">Selecione...</option>
+                    {users.filter(u => u.profile === 'employee').map(user => (
+                      <option key={user.id} value={user.id}>{user.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Mês</label>
+                  <select
+                    value={inconsistencyMonth}
+                    onChange={(e) => setInconsistencyMonth(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                  >
+                    <option value="01">Janeiro</option>
+                    <option value="02">Fevereiro</option>
+                    <option value="03">Março</option>
+                    <option value="04">Abril</option>
+                    <option value="05">Maio</option>
+                    <option value="06">Junho</option>
+                    <option value="07">Julho</option>
+                    <option value="08">Agosto</option>
+                    <option value="09">Setembro</option>
+                    <option value="10">Outubro</option>
+                    <option value="11">Novembro</option>
+                    <option value="12">Dezembro</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Ano</label>
+                  <input
+                    type="number"
+                    value={inconsistencyYear}
+                    onChange={(e) => setInconsistencyYear(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                    placeholder="2026"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {!inconsistencyUser ? (
+              <div className="bg-white rounded-xl shadow-lg p-8 text-center text-gray-500">
+                Selecione um funcionário para buscar inconsistências.
+              </div>
+            ) : (() => {
+              const resultado = generateInconsistencies();
+              if (!resultado) return null;
+              const nomesMeses = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+              return (
+                <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+                  <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-6 text-white">
+                    <h3 className="text-2xl font-bold mb-2 flex items-center gap-2">
+                      <AlertTriangle className="w-6 h-6" />
+                      Inconsistências Encontradas
+                    </h3>
+                    <p className="text-lg">Funcionário: {resultado.user.name}</p>
+                    <p className="text-amber-100">
+                      Período: {nomesMeses[parseInt(inconsistencyMonth)]} de {inconsistencyYear}
+                    </p>
+                  </div>
+
+                  <div className="p-6">
+                    {resultado.inconsistencias.length === 0 ? (
+                      <p className="text-center text-gray-500 py-8">
+                        ✅ Nenhuma inconsistência encontrada neste período.
+                      </p>
+                    ) : (
+                      <div className="space-y-3">
+                        {resultado.inconsistencias.map((inc) => (
+                          <div key={inc.date} className="border border-amber-200 bg-amber-50 rounded-lg p-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <h4 className="font-semibold text-gray-900">
+                                {formatDate(inc.date)} — {inc.diaSemana.nome}
+                              </h4>
+                            </div>
+                            <p className="text-sm text-amber-800 mb-2">{inc.motivo}</p>
+                            <div className="flex flex-wrap gap-3 text-xs text-gray-600 font-mono">
+                              <span>Entrada: {formatHoraCurta(inc.entrada)}</span>
+                              <span>Início intervalo: {formatHoraCurta(inc.inicioIntervalo)}</span>
+                              <span>Fim intervalo: {formatHoraCurta(inc.fimIntervalo)}</span>
+                              <span>Saída: {formatHoraCurta(inc.saida)}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
