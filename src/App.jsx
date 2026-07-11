@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download } from 'lucide-react';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v3.1-geolocalizacao';
+const APP_VERSION = 'v3.2-geoloc-diagnostico';
 
 // Configuração do banco de dados (Supabase)
 const SUPABASE_URL = 'https://rnabihjpvnvyrvpwpyjv.supabase.co';
@@ -62,18 +62,30 @@ const dbRecordToApp = (r) => ({
 const getCurrentPosition = () => {
   return new Promise((resolve) => {
     if (!navigator.geolocation) {
-      resolve(null);
+      resolve({ position: null, errorReason: 'Navegador não suporta geolocalização' });
       return;
     }
     navigator.geolocation.getCurrentPosition(
       (position) => {
         resolve({
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
+          position: {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          },
+          errorReason: null,
         });
       },
-      () => resolve(null), // permissão negada ou erro — segue sem localização
-      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+      (error) => {
+        // Reporta o motivo exato da falha, para sabermos se foi permissão
+        // negada, GPS indisponível, ou tempo esgotado.
+        const motivos = {
+          1: 'Permissão de localização negada',
+          2: 'Localização indisponível no dispositivo',
+          3: 'Tempo esgotado ao obter localização',
+        };
+        resolve({ position: null, errorReason: motivos[error.code] || 'Erro desconhecido de localização' });
+      },
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
     );
   });
 };
@@ -398,7 +410,7 @@ const ControlePonto = () => {
     
     // Tenta obter localização e endereço — se falhar ou for negado, o ponto
     // ainda assim é registrado normalmente, apenas sem essas informações.
-    const posicao = await getCurrentPosition();
+    const { position: posicao, errorReason } = await getCurrentPosition();
     let endereco = null;
     if (posicao) {
       endereco = await reverseGeocode(posicao.latitude, posicao.longitude);
@@ -420,7 +432,12 @@ const ControlePonto = () => {
       });
       const novoRegistro = dbRecordToApp(inseridos[0]);
       setTimeRecords([...timeRecords, novoRegistro]);
-      const avisoLocalizacao = posicao ? '' : ' (localização não disponível)';
+      let avisoLocalizacao = '';
+      if (!posicao) {
+        avisoLocalizacao = ` (${errorReason || 'localização não disponível'})`;
+      } else if (!endereco) {
+        avisoLocalizacao = ' (endereço não pôde ser identificado)';
+      }
       setClockMessage({ text: `Ponto registrado: ${type.toUpperCase()} às ${novoRegistro.time}${avisoLocalizacao}`, error: false });
     } catch (error) {
       console.error('Erro ao salvar registro de ponto:', error);
