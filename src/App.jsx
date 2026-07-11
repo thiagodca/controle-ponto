@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download } from 'lucide-react';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v3.0-vercel-deploy';
+const APP_VERSION = 'v3.1-geolocalizacao';
 
 // Configuração do banco de dados (Supabase)
 const SUPABASE_URL = 'https://rnabihjpvnvyrvpwpyjv.supabase.co';
@@ -50,7 +50,50 @@ const dbRecordToApp = (r) => ({
   time: r.time,
   datetime: r.datetime,
   type: r.type,
+  latitude: r.latitude,
+  longitude: r.longitude,
+  address: r.address,
 });
+
+// Obtém a localização atual do navegador (com timeout) e retorna coordenadas.
+// Se a pessoa negar a permissão ou o dispositivo não suportar, retorna null
+// em vez de travar o registro de ponto — a localização é um "extra", não deve
+// impedir o funcionário de bater o ponto.
+const getCurrentPosition = () => {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) {
+      resolve(null);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        resolve({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        });
+      },
+      () => resolve(null), // permissão negada ou erro — segue sem localização
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+    );
+  });
+};
+
+// Converte coordenadas em um endereço legível usando o serviço gratuito
+// Nominatim (OpenStreetMap). Se falhar, retorna null (não bloqueia o ponto).
+const reverseGeocode = async (latitude, longitude) => {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1`;
+    const response = await fetch(url, {
+      headers: { 'Accept-Language': 'pt-BR' },
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.display_name || null;
+  } catch (error) {
+    console.warn('Não foi possível obter o endereço:', error.message);
+    return null;
+  }
+};
 
 const ControlePonto = () => {
   // Estado para autenticação
@@ -338,8 +381,11 @@ const ControlePonto = () => {
   };
 
   // Função para registrar ponto
+  const [isClockingIn, setIsClockingIn] = useState(false);
+
   const handleClockIn = async () => {
     if (!currentUser) return;
+    setIsClockingIn(true);
     
     const now = new Date();
     const today = now.toISOString().split('T')[0];
@@ -350,6 +396,14 @@ const ControlePonto = () => {
     
     const type = todayRecords.length % 2 === 0 ? 'entrada' : 'saída';
     
+    // Tenta obter localização e endereço — se falhar ou for negado, o ponto
+    // ainda assim é registrado normalmente, apenas sem essas informações.
+    const posicao = await getCurrentPosition();
+    let endereco = null;
+    if (posicao) {
+      endereco = await reverseGeocode(posicao.latitude, posicao.longitude);
+    }
+    
     try {
       const inseridos = await supabaseRequest('registros_ponto', 'POST', {
         body: {
@@ -359,14 +413,20 @@ const ControlePonto = () => {
           time: now.toTimeString().split(' ')[0],
           datetime: now.toISOString(),
           type,
+          latitude: posicao ? posicao.latitude : null,
+          longitude: posicao ? posicao.longitude : null,
+          address: endereco,
         }
       });
       const novoRegistro = dbRecordToApp(inseridos[0]);
       setTimeRecords([...timeRecords, novoRegistro]);
-      setClockMessage({ text: `Ponto registrado: ${type.toUpperCase()} às ${novoRegistro.time}`, error: false });
+      const avisoLocalizacao = posicao ? '' : ' (localização não disponível)';
+      setClockMessage({ text: `Ponto registrado: ${type.toUpperCase()} às ${novoRegistro.time}${avisoLocalizacao}`, error: false });
     } catch (error) {
       console.error('Erro ao salvar registro de ponto:', error);
       setClockMessage({ text: 'Erro ao salvar o ponto: ' + error.message, error: true });
+    } finally {
+      setIsClockingIn(false);
     }
     
     setTimeout(() => setClockMessage(null), 5000);
@@ -700,9 +760,10 @@ const ControlePonto = () => {
               <div className="p-5 sm:p-8">
                 <button
                   onClick={handleClockIn}
-                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-5 sm:py-6 rounded-xl font-bold text-lg sm:text-xl hover:from-indigo-700 hover:to-purple-700 transition-all active:scale-95 shadow-lg"
+                  disabled={isClockingIn}
+                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-5 sm:py-6 rounded-xl font-bold text-lg sm:text-xl hover:from-indigo-700 hover:to-purple-700 transition-all active:scale-95 shadow-lg disabled:opacity-60"
                 >
-                  REGISTRAR PONTO
+                  {isClockingIn ? 'OBTENDO LOCALIZAÇÃO...' : 'REGISTRAR PONTO'}
                 </button>
                 
                 {clockMessage && (
@@ -722,12 +783,17 @@ const ControlePonto = () => {
                       .filter(r => r.userId === currentUser.id && r.date === new Date().toISOString().split('T')[0])
                       .sort((a, b) => new Date(a.datetime) - new Date(b.datetime))
                       .map(record => (
-                        <div key={record.id} className="flex items-center justify-between p-3 sm:p-4 bg-gray-50 rounded-lg">
-                          <div className="flex items-center gap-3">
-                            <div className={`w-3 h-3 rounded-full ${record.type === 'entrada' ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                            <span className="font-semibold text-gray-700 capitalize">{record.type}</span>
+                        <div key={record.id} className="p-3 sm:p-4 bg-gray-50 rounded-lg">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className={`w-3 h-3 rounded-full ${record.type === 'entrada' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                              <span className="font-semibold text-gray-700 capitalize">{record.type}</span>
+                            </div>
+                            <span className="text-gray-600 font-mono">{record.time}</span>
                           </div>
-                          <span className="text-gray-600 font-mono">{record.time}</span>
+                          {record.address && (
+                            <p className="text-xs text-gray-500 mt-1 pl-6">📍 {record.address}</p>
+                          )}
                         </div>
                       ))}
                     {currentUser && timeRecords.filter(r => r.userId === currentUser.id && r.date === new Date().toISOString().split('T')[0]).length === 0 && (
@@ -987,6 +1053,7 @@ const ControlePonto = () => {
                     <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Data</th>
                     <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Hora</th>
                     <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Tipo</th>
+                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Localização</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200">
@@ -1003,6 +1070,21 @@ const ControlePonto = () => {
                         }`}>
                           {record.type.toUpperCase()}
                         </span>
+                      </td>
+                      <td className="px-6 py-4 text-gray-500 text-xs max-w-xs">
+                        {record.address ? (
+                          <a
+                            href={`https://www.google.com/maps?q=${record.latitude},${record.longitude}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-indigo-600 hover:underline"
+                            title={record.address}
+                          >
+                            📍 {record.address.split(',').slice(0, 2).join(',')}
+                          </a>
+                        ) : (
+                          <span className="text-gray-300">—</span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -1124,12 +1206,17 @@ const ControlePonto = () => {
                               <div className="p-6">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                   {records.map(record => (
-                                    <div key={record.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                                      <div className="flex items-center gap-3">
-                                        <div className={`w-3 h-3 rounded-full ${record.type === 'entrada' ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                                        <span className="font-semibold text-gray-700 capitalize">{record.type}</span>
+                                    <div key={record.id} className="p-4 bg-gray-50 rounded-lg">
+                                      <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-3">
+                                          <div className={`w-3 h-3 rounded-full ${record.type === 'entrada' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                                          <span className="font-semibold text-gray-700 capitalize">{record.type}</span>
+                                        </div>
+                                        <span className="text-gray-600 font-mono text-lg">{record.time}</span>
                                       </div>
-                                      <span className="text-gray-600 font-mono text-lg">{record.time}</span>
+                                      {record.address && (
+                                        <p className="text-xs text-gray-500 mt-1 pl-6">📍 {record.address}</p>
+                                      )}
                                     </div>
                                   ))}
                                 </div>
