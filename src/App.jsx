@@ -1,8 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download } from 'lucide-react';
+import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle } from 'lucide-react';
+import { MapContainer, TileLayer, Marker } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v3.2-geoloc-diagnostico';
+const APP_VERSION = 'v3.3-mapa-confirmacao';
+
+// Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
+// ícones padrão, que não carregam corretamente após o build).
+const marcadorIcon = L.divIcon({
+  html: '<div style="font-size: 36px; line-height: 1; transform: translateY(-8px);">📍</div>',
+  className: '',
+  iconSize: [36, 36],
+  iconAnchor: [18, 36],
+});
 
 // Configuração do banco de dados (Supabase)
 const SUPABASE_URL = 'https://rnabihjpvnvyrvpwpyjv.supabase.co';
@@ -59,6 +71,19 @@ const dbRecordToApp = (r) => ({
 // Se a pessoa negar a permissão ou o dispositivo não suportar, retorna null
 // em vez de travar o registro de ponto — a localização é um "extra", não deve
 // impedir o funcionário de bater o ponto.
+// Verifica o estado atual da permissão de geolocalização, sem disparar o
+// pedido de permissão do navegador. Retorna 'granted', 'denied', 'prompt'
+// (ainda não decidido) ou 'unknown' (navegador não suporta essa checagem).
+const checkGeoPermission = async () => {
+  if (!navigator.permissions || !navigator.permissions.query) return 'unknown';
+  try {
+    const status = await navigator.permissions.query({ name: 'geolocation' });
+    return status.state;
+  } catch {
+    return 'unknown';
+  }
+};
+
 const getCurrentPosition = () => {
   return new Promise((resolve) => {
     if (!navigator.geolocation) {
@@ -392,30 +417,67 @@ const ControlePonto = () => {
     }
   };
 
-  // Função para registrar ponto
-  const [isClockingIn, setIsClockingIn] = useState(false);
+  // Fluxo de registro de ponto com confirmação por mapa
+  const [clockModalOpen, setClockModalOpen] = useState(false);
+  // status: 'checking-permission' | 'permission-denied' | 'loading-location' | 'geocoding' | 'ready' | 'error'
+  const [clockModalStatus, setClockModalStatus] = useState('checking-permission');
+  const [clockModalPosition, setClockModalPosition] = useState(null);
+  const [clockModalAddress, setClockModalAddress] = useState(null);
+  const [clockModalErrorMsg, setClockModalErrorMsg] = useState('');
+  const [isConfirmingClockIn, setIsConfirmingClockIn] = useState(false);
 
-  const handleClockIn = async () => {
-    if (!currentUser) return;
-    setIsClockingIn(true);
-    
+  // Ao tocar em "Registrar Ponto": abre o modal e começa o processo de obter
+  // a localização. O registro só é efetivado quando o usuário confirmar,
+  // depois do mapa ter carregado — nunca automaticamente.
+  const handleOpenClockModal = async () => {
+    setClockModalOpen(true);
+    setClockModalPosition(null);
+    setClockModalAddress(null);
+    setClockModalErrorMsg('');
+    setClockModalStatus('checking-permission');
+
+    const permissao = await checkGeoPermission();
+    if (permissao === 'denied') {
+      setClockModalStatus('permission-denied');
+      return;
+    }
+
+    setClockModalStatus('loading-location');
+    const { position, errorReason } = await getCurrentPosition();
+    if (!position) {
+      setClockModalErrorMsg(errorReason || 'Não foi possível obter sua localização.');
+      setClockModalStatus(errorReason === 'Permissão de localização negada' ? 'permission-denied' : 'error');
+      return;
+    }
+
+    setClockModalPosition(position);
+    setClockModalStatus('geocoding');
+    const endereco = await reverseGeocode(position.latitude, position.longitude);
+    setClockModalAddress(endereco);
+    setClockModalStatus('ready');
+  };
+
+  const handleCloseClockModal = () => {
+    setClockModalOpen(false);
+    setClockModalStatus('checking-permission');
+    setClockModalPosition(null);
+    setClockModalAddress(null);
+    setClockModalErrorMsg('');
+  };
+
+  // Executa de fato o registro do ponto — só é chamado depois que o usuário
+  // confirma no modal, com o mapa já carregado.
+  const handleConfirmClockIn = async () => {
+    if (!currentUser || !clockModalPosition) return;
+    setIsConfirmingClockIn(true);
+
     const now = new Date();
     const today = now.toISOString().split('T')[0];
-    
     const todayRecords = timeRecords.filter(r => 
       r.userId === currentUser.id && r.date === today
     );
-    
     const type = todayRecords.length % 2 === 0 ? 'entrada' : 'saída';
-    
-    // Tenta obter localização e endereço — se falhar ou for negado, o ponto
-    // ainda assim é registrado normalmente, apenas sem essas informações.
-    const { position: posicao, errorReason } = await getCurrentPosition();
-    let endereco = null;
-    if (posicao) {
-      endereco = await reverseGeocode(posicao.latitude, posicao.longitude);
-    }
-    
+
     try {
       const inseridos = await supabaseRequest('registros_ponto', 'POST', {
         body: {
@@ -425,27 +487,24 @@ const ControlePonto = () => {
           time: now.toTimeString().split(' ')[0],
           datetime: now.toISOString(),
           type,
-          latitude: posicao ? posicao.latitude : null,
-          longitude: posicao ? posicao.longitude : null,
-          address: endereco,
+          latitude: clockModalPosition.latitude,
+          longitude: clockModalPosition.longitude,
+          address: clockModalAddress,
         }
       });
       const novoRegistro = dbRecordToApp(inseridos[0]);
       setTimeRecords([...timeRecords, novoRegistro]);
-      let avisoLocalizacao = '';
-      if (!posicao) {
-        avisoLocalizacao = ` (${errorReason || 'localização não disponível'})`;
-      } else if (!endereco) {
-        avisoLocalizacao = ' (endereço não pôde ser identificado)';
-      }
-      setClockMessage({ text: `Ponto registrado: ${type.toUpperCase()} às ${novoRegistro.time}${avisoLocalizacao}`, error: false });
+      const avisoEndereco = clockModalAddress ? '' : ' (endereço não identificado)';
+      setClockMessage({ text: `Ponto registrado: ${type.toUpperCase()} às ${novoRegistro.time}${avisoEndereco}`, error: false });
+      handleCloseClockModal();
     } catch (error) {
       console.error('Erro ao salvar registro de ponto:', error);
       setClockMessage({ text: 'Erro ao salvar o ponto: ' + error.message, error: true });
+      handleCloseClockModal();
     } finally {
-      setIsClockingIn(false);
+      setIsConfirmingClockIn(false);
     }
-    
+
     setTimeout(() => setClockMessage(null), 5000);
   };
 
@@ -776,11 +835,10 @@ const ControlePonto = () => {
               
               <div className="p-5 sm:p-8">
                 <button
-                  onClick={handleClockIn}
-                  disabled={isClockingIn}
-                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-5 sm:py-6 rounded-xl font-bold text-lg sm:text-xl hover:from-indigo-700 hover:to-purple-700 transition-all active:scale-95 shadow-lg disabled:opacity-60"
+                  onClick={handleOpenClockModal}
+                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-5 sm:py-6 rounded-xl font-bold text-lg sm:text-xl hover:from-indigo-700 hover:to-purple-700 transition-all active:scale-95 shadow-lg"
                 >
-                  {isClockingIn ? 'OBTENDO LOCALIZAÇÃO...' : 'REGISTRAR PONTO'}
+                  REGISTRAR PONTO
                 </button>
                 
                 {clockMessage && (
@@ -1250,6 +1308,137 @@ const ControlePonto = () => {
           </div>
         )}
       </main>
+
+      {/* Modal de confirmação de ponto com mapa (somente visualização) */}
+      {clockModalOpen && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                <MapPin className="w-5 h-5 text-indigo-600" />
+                Confirmar Registro de Ponto
+              </h3>
+              <button onClick={handleCloseClockModal} className="p-1 text-gray-400 hover:text-gray-600">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="p-5">
+              {(clockModalStatus === 'checking-permission' || clockModalStatus === 'loading-location') && (
+                <div className="py-12 text-center">
+                  <div className="inline-block w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
+                  <p className="text-gray-600 font-medium">
+                    {clockModalStatus === 'checking-permission' ? 'Verificando permissão de localização...' : 'Obtendo sua localização...'}
+                  </p>
+                  <p className="text-gray-400 text-sm mt-1">Isso pode levar alguns segundos</p>
+                </div>
+              )}
+
+              {clockModalStatus === 'permission-denied' && (
+                <div className="py-6">
+                  <div className="bg-amber-50 border border-amber-300 rounded-lg p-4 mb-4">
+                    <div className="flex gap-3">
+                      <AlertTriangle className="w-6 h-6 text-amber-600 flex-shrink-0" />
+                      <div>
+                        <p className="font-semibold text-amber-800">Permissão de localização bloqueada</p>
+                        <p className="text-amber-700 text-sm mt-1">
+                          O registro de ponto exige acesso à sua localização. Seu navegador ou celular está bloqueando esse acesso.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-gray-700 text-sm font-medium mb-2">Como permitir:</p>
+                  <ul className="text-gray-600 text-sm space-y-1.5 list-disc pl-5 mb-4">
+                    <li><strong>iPhone:</strong> Ajustes → Privacidade e Segurança → Serviços de Localização → seu navegador → "Perguntar" ou "Sempre"</li>
+                    <li><strong>Android:</strong> Configurações → Apps → seu navegador → Permissões → Localização → Permitir</li>
+                    <li>Depois, atualize a página e tente registrar o ponto de novo</li>
+                  </ul>
+                  <button
+                    onClick={handleOpenClockModal}
+                    className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors"
+                  >
+                    Tentar novamente
+                  </button>
+                </div>
+              )}
+
+              {clockModalStatus === 'error' && (
+                <div className="py-6">
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+                    <p className="font-semibold text-red-700">Não foi possível obter sua localização</p>
+                    <p className="text-red-600 text-sm mt-1">{clockModalErrorMsg}</p>
+                  </div>
+                  <button
+                    onClick={handleOpenClockModal}
+                    className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors"
+                  >
+                    Tentar novamente
+                  </button>
+                </div>
+              )}
+
+              {(clockModalStatus === 'geocoding' || clockModalStatus === 'ready') && clockModalPosition && (
+                <div>
+                  <div className="rounded-xl overflow-hidden border border-gray-200 mb-4" style={{ height: '260px' }}>
+                    <MapContainer
+                      center={[clockModalPosition.latitude, clockModalPosition.longitude]}
+                      zoom={17}
+                      style={{ height: '100%', width: '100%' }}
+                      dragging={false}
+                      zoomControl={false}
+                      scrollWheelZoom={false}
+                      doubleClickZoom={false}
+                      touchZoom={false}
+                      attributionControl={false}
+                    >
+                      <TileLayer
+                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                      />
+                      <Marker
+                        position={[clockModalPosition.latitude, clockModalPosition.longitude]}
+                        icon={marcadorIcon}
+                      />
+                    </MapContainer>
+                  </div>
+
+                  <div className="bg-gray-50 rounded-lg p-3 mb-4 min-h-[3.5rem] flex items-center">
+                    {clockModalStatus === 'geocoding' ? (
+                      <p className="text-gray-500 text-sm flex items-center gap-2">
+                        <span className="inline-block w-4 h-4 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin"></span>
+                        Identificando endereço...
+                      </p>
+                    ) : (
+                      <p className="text-gray-700 text-sm">
+                        📍 {clockModalAddress || 'Endereço não identificado (coordenadas capturadas normalmente)'}
+                      </p>
+                    )}
+                  </div>
+
+                  <p className="text-xs text-gray-400 mb-4 text-center">
+                    Esta é a sua localização atual, obtida pelo GPS do dispositivo. Não é possível alterá-la manualmente.
+                  </p>
+
+                  <div className="flex gap-3">
+                    <button
+                      onClick={handleCloseClockModal}
+                      className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      onClick={handleConfirmClockIn}
+                      disabled={clockModalStatus !== 'ready' || isConfirmingClockIn}
+                      className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isConfirmingClockIn ? 'Registrando...' : 'Confirmar Registro'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
