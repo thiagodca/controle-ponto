@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v3.4-relatorio-mensal';
+const APP_VERSION = 'v3.5-dia-semana';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -618,6 +618,18 @@ const ControlePonto = () => {
   const formatDate = (dateStr) => {
     const [year, month, day] = dateStr.split('-');
     return `${day}/${month}/${year}`;
+  };
+
+  const NOMES_DIAS_SEMANA = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+
+  // Retorna o nome do dia da semana e se é fim de semana, a partir de "YYYY-MM-DD".
+  // Usa os componentes da data diretamente (em vez de new Date(dateStr) puro)
+  // para evitar problemas de fuso horário que deslocariam o dia da semana.
+  const getDiaSemana = (dateStr) => {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const data = new Date(year, month - 1, day);
+    const indice = data.getDay(); // 0 = domingo, 6 = sábado
+    return { nome: NOMES_DIAS_SEMANA[indice], isFimDeSemana: indice === 0 || indice === 6 };
   };
 
   // Renderização da tela de login
@@ -1301,6 +1313,7 @@ const ControlePonto = () => {
                       <thead className="bg-gray-50 border-b border-gray-200">
                         <tr>
                           <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Data</th>
+                          <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Dia</th>
                           <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Entrada</th>
                           <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Início intervalo</th>
                           <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Fim intervalo</th>
@@ -1310,9 +1323,12 @@ const ControlePonto = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
-                        {report.dias.map((dia) => (
-                          <tr key={dia.date} className={dia.status === 'sem-registro' ? 'text-gray-300' : 'text-gray-700'}>
+                        {report.dias.map((dia) => {
+                          const diaSemana = getDiaSemana(dia.date);
+                          return (
+                          <tr key={dia.date} className={`${dia.status === 'sem-registro' ? 'text-gray-300' : 'text-gray-700'} ${diaSemana.isFimDeSemana ? 'bg-gray-50' : ''}`}>
                             <td className="px-4 py-2 whitespace-nowrap font-medium">{formatDate(dia.date)}</td>
+                            <td className={`px-4 py-2 whitespace-nowrap ${diaSemana.isFimDeSemana ? 'font-semibold text-gray-500' : ''}`}>{diaSemana.nome}</td>
                             <td className="px-4 py-2 whitespace-nowrap font-mono">{formatHoraCurta(dia.entrada)}</td>
                             <td className="px-4 py-2 whitespace-nowrap font-mono">{formatHoraCurta(dia.inicioIntervalo)}</td>
                             <td className="px-4 py-2 whitespace-nowrap font-mono">{formatHoraCurta(dia.fimIntervalo)}</td>
@@ -1330,11 +1346,12 @@ const ControlePonto = () => {
                               {dia.status === 'incompleto' ? '—' : formatHoras(dia.horasExtras)}
                             </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </tbody>
                       <tfoot className="bg-gray-50 border-t-2 border-gray-300">
                         <tr>
-                          <td colSpan={5} className="px-4 py-3 text-right font-bold text-gray-900">Total do mês</td>
+                          <td colSpan={6} className="px-4 py-3 text-right font-bold text-gray-900">Total do mês</td>
                           <td className="px-4 py-3 text-right font-bold text-gray-900">{formatHoras(report.totalHorasTrabalhadas)}</td>
                           <td className={`px-4 py-3 text-right font-bold ${report.totalHorasExtras < 0 ? 'text-red-600' : 'text-green-600'}`}>
                             {formatHoras(report.totalHorasExtras)}
