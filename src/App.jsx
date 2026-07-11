@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v3.3-mapa-confirmacao';
+const APP_VERSION = 'v3.4-relatorio-mensal';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -159,10 +159,11 @@ const ControlePonto = () => {
   const [filterMonth, setFilterMonth] = useState('');
   const [filterYear, setFilterYear] = useState('');
   
-  // Estado para relatório
+  // Estado para relatório — mês e ano do relatório vêm pré-selecionados com o mês atual
+  const nowParaDefaults = new Date();
   const [reportUser, setReportUser] = useState('');
-  const [reportMonth, setReportMonth] = useState('');
-  const [reportYear, setReportYear] = useState('');
+  const [reportMonth, setReportMonth] = useState(String(nowParaDefaults.getMonth() + 1).padStart(2, '0'));
+  const [reportYear, setReportYear] = useState(String(nowParaDefaults.getFullYear()));
   
   // Estado de carregamento inicial e mensagens de erro (inline, não usa alert)
   const [isLoading, setIsLoading] = useState(true);
@@ -519,51 +520,99 @@ const ControlePonto = () => {
   };
 
   // Função para calcular horas trabalhadas
-  const calculateWorkedHours = (records) => {
-    let totalMinutes = 0;
-    
-    for (let i = 0; i < records.length - 1; i += 2) {
-      if (records[i].type === 'entrada' && records[i + 1].type === 'saída') {
-        const entrada = new Date(`${records[i].date}T${records[i].time}`);
-        const saida = new Date(`${records[i + 1].date}T${records[i + 1].time}`);
-        totalMinutes += (saida - entrada) / 60000;
-      }
-    }
-    
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = Math.round(totalMinutes % 60);
-    return { hours, minutes, totalMinutes };
+  // Converte "HH:MM:SS" em minutos desde a meia-noite, para facilitar cálculos
+  const timeToMinutes = (timeStr) => {
+    if (!timeStr) return null;
+    const [h, m, s] = timeStr.split(':').map(Number);
+    return h * 60 + m + (s || 0) / 60;
   };
 
-  // Função para gerar relatório
-  const generateReport = () => {
-    if (!reportUser) {
-      alert('Selecione um funcionário!');
-      return;
+  // Calcula as métricas de um único dia (entrada, intervalo, saída, horas
+  // trabalhadas e horas extras) a partir dos registros de ponto daquele dia.
+  //
+  // Regras assumidas (combinadas com o usuário):
+  // - 2 marcações no dia = entrada + saída, sem intervalo marcado → assume-se
+  //   1 hora de intervalo automaticamente.
+  // - 4 marcações no dia = entrada, início do intervalo, fim do intervalo, saída.
+  // - 1 ou 3 marcações = dia incompleto (falta alguma marcação); não entra no
+  //   somatório de horas.
+  // - Dia sem nenhuma marcação = não trabalhado; não entra no somatório.
+  const getDayMetrics = (dateStr, allRecords) => {
+    const dayRecords = allRecords
+      .filter(r => r.date === dateStr)
+      .sort((a, b) => a.time.localeCompare(b.time));
+
+    const punches = dayRecords.map(r => r.time);
+    const n = punches.length;
+
+    let entrada = null, inicioIntervalo = null, fimIntervalo = null, saida = null;
+    let horasTrabalhadas = null;
+    let status = 'sem-registro';
+
+    if (n === 0) {
+      status = 'sem-registro';
+    } else if (n === 1) {
+      entrada = punches[0];
+      status = 'incompleto';
+    } else if (n === 2) {
+      entrada = punches[0];
+      saida = punches[1];
+      const totalMin = timeToMinutes(saida) - timeToMinutes(entrada) - 60; // assume 1h de intervalo
+      horasTrabalhadas = Math.max(0, totalMin) / 60;
+      status = 'completo';
+    } else if (n === 3) {
+      entrada = punches[0];
+      inicioIntervalo = punches[1];
+      fimIntervalo = punches[2];
+      status = 'incompleto'; // falta a marcação de saída
+    } else {
+      entrada = punches[0];
+      inicioIntervalo = punches[1];
+      fimIntervalo = punches[2];
+      saida = punches[3];
+      const minTrabalhados = (timeToMinutes(inicioIntervalo) - timeToMinutes(entrada)) +
+                              (timeToMinutes(saida) - timeToMinutes(fimIntervalo));
+      horasTrabalhadas = Math.max(0, minTrabalhados) / 60;
+      status = 'completo';
     }
+
+    const horasExtras = horasTrabalhadas !== null ? horasTrabalhadas - 8 : null;
+
+    return { date: dateStr, entrada, inicioIntervalo, fimIntervalo, saida, horasTrabalhadas, horasExtras, status };
+  };
+
+  const formatHoraCurta = (timeStr) => timeStr ? timeStr.substring(0, 5) : '—';
+
+  const formatHoras = (valor) => {
+    if (valor === null || valor === undefined) return '—';
+    const sinal = valor < 0 ? '-' : '';
+    const abs = Math.abs(valor);
+    const h = Math.floor(abs);
+    const m = Math.round((abs - h) * 60);
+    return `${sinal}${h}h${m.toString().padStart(2, '0')}`;
+  };
+
+  // Função para gerar relatório: uma linha para cada dia do mês/ano selecionado
+  const generateReport = () => {
+    if (!reportUser || !reportMonth || !reportYear) return null;
 
     const user = users.find(u => u.id === reportUser);
-    let filtered = timeRecords.filter(r => r.userId === reportUser);
-    
-    if (reportMonth) {
-      filtered = filtered.filter(r => r.date.substring(5, 7) === reportMonth);
+    const userRecords = timeRecords.filter(r => r.userId === reportUser);
+
+    const ano = parseInt(reportYear);
+    const mes = parseInt(reportMonth); // 1-12
+    const diasNoMes = new Date(ano, mes, 0).getDate();
+
+    const dias = [];
+    for (let dia = 1; dia <= diasNoMes; dia++) {
+      const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+      dias.push(getDayMetrics(dateStr, userRecords));
     }
-    if (reportYear) {
-      filtered = filtered.filter(r => r.date.substring(0, 4) === reportYear);
-    }
 
-    filtered.sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+    const totalHorasTrabalhadas = dias.reduce((acc, d) => acc + (d.horasTrabalhadas || 0), 0);
+    const totalHorasExtras = dias.reduce((acc, d) => acc + (d.horasExtras !== null ? d.horasExtras : 0), 0);
 
-    // Agrupar por dia
-    const byDate = {};
-    filtered.forEach(record => {
-      if (!byDate[record.date]) {
-        byDate[record.date] = [];
-      }
-      byDate[record.date].push(record);
-    });
-
-    return { user, byDate };
+    return { user, dias, totalHorasTrabalhadas, totalHorasExtras };
   };
 
   const formatDate = (dateStr) => {
@@ -1196,13 +1245,12 @@ const ControlePonto = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Mês (opcional)</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Mês</label>
                   <select
                     value={reportMonth}
                     onChange={(e) => setReportMonth(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
                   >
-                    <option value="">Todos</option>
                     <option value="01">Janeiro</option>
                     <option value="02">Fevereiro</option>
                     <option value="03">Março</option>
@@ -1218,89 +1266,85 @@ const ControlePonto = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Ano (opcional)</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Ano</label>
                   <input
                     type="number"
                     value={reportYear}
                     onChange={(e) => setReportYear(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                    placeholder="2024"
+                    placeholder="2026"
                   />
                 </div>
               </div>
             </div>
 
-            {reportUser && (() => {
+            {!reportUser ? (
+              <div className="bg-white rounded-xl shadow-lg p-8 text-center text-gray-500">
+                Selecione um funcionário para gerar o relatório.
+              </div>
+            ) : (() => {
               const report = generateReport();
+              if (!report) return null;
+              const nomesMeses = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
               return (
                 <div className="bg-white rounded-xl shadow-lg overflow-hidden">
                   <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 text-white">
                     <h3 className="text-2xl font-bold mb-2">Relatório de Ponto</h3>
                     <p className="text-lg">Funcionário: {report.user.name}</p>
-                    {reportMonth && reportYear && (
-                      <p className="text-indigo-100">
-                        Período: {['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'][parseInt(reportMonth)]} de {reportYear}
-                      </p>
-                    )}
+                    <p className="text-indigo-100">
+                      Período: {nomesMeses[parseInt(reportMonth)]} de {reportYear}
+                    </p>
                   </div>
-                  
-                  <div className="p-6">
-                    {Object.keys(report.byDate).length === 0 ? (
-                      <p className="text-center text-gray-500 py-8">Nenhum registro encontrado para o período selecionado</p>
-                    ) : (
-                      <div className="space-y-6">
-                        {Object.entries(report.byDate).reverse().map(([date, records]) => {
-                          const worked = calculateWorkedHours(records);
-                          const extraMinutes = Math.max(0, worked.totalMinutes - 480); // 8 horas = 480 minutos
-                          const extraHours = Math.floor(extraMinutes / 60);
-                          const extraMins = Math.round(extraMinutes % 60);
-                          
-                          return (
-                            <div key={date} className="border border-gray-200 rounded-lg overflow-hidden">
-                              <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
-                                <div className="flex items-center justify-between">
-                                  <h4 className="text-lg font-semibold text-gray-900">{formatDate(date)}</h4>
-                                  <div className="flex gap-6 text-sm">
-                                    <div>
-                                      <span className="text-gray-600">Horas Trabalhadas: </span>
-                                      <span className="font-semibold text-gray-900">
-                                        {worked.hours}h {worked.minutes}m
-                                      </span>
-                                    </div>
-                                    {extraMinutes > 0 && (
-                                      <div>
-                                        <span className="text-gray-600">Horas Extras: </span>
-                                        <span className="font-semibold text-green-600">
-                                          {extraHours}h {extraMins}m
-                                        </span>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="p-6">
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                  {records.map(record => (
-                                    <div key={record.id} className="p-4 bg-gray-50 rounded-lg">
-                                      <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
-                                          <div className={`w-3 h-3 rounded-full ${record.type === 'entrada' ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                                          <span className="font-semibold text-gray-700 capitalize">{record.type}</span>
-                                        </div>
-                                        <span className="text-gray-600 font-mono text-lg">{record.time}</span>
-                                      </div>
-                                      {record.address && (
-                                        <p className="text-xs text-gray-500 mt-1 pl-6">📍 {record.address}</p>
-                                      )}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 border-b border-gray-200">
+                        <tr>
+                          <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Data</th>
+                          <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Entrada</th>
+                          <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Início intervalo</th>
+                          <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Fim intervalo</th>
+                          <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Saída</th>
+                          <th className="px-4 py-3 text-right font-semibold text-gray-700 whitespace-nowrap">Horas trabalhadas</th>
+                          <th className="px-4 py-3 text-right font-semibold text-gray-700 whitespace-nowrap">Horas extras</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {report.dias.map((dia) => (
+                          <tr key={dia.date} className={dia.status === 'sem-registro' ? 'text-gray-300' : 'text-gray-700'}>
+                            <td className="px-4 py-2 whitespace-nowrap font-medium">{formatDate(dia.date)}</td>
+                            <td className="px-4 py-2 whitespace-nowrap font-mono">{formatHoraCurta(dia.entrada)}</td>
+                            <td className="px-4 py-2 whitespace-nowrap font-mono">{formatHoraCurta(dia.inicioIntervalo)}</td>
+                            <td className="px-4 py-2 whitespace-nowrap font-mono">{formatHoraCurta(dia.fimIntervalo)}</td>
+                            <td className="px-4 py-2 whitespace-nowrap font-mono">{formatHoraCurta(dia.saida)}</td>
+                            <td className="px-4 py-2 whitespace-nowrap text-right font-semibold">
+                              {dia.status === 'incompleto' ? (
+                                <span className="text-amber-600 text-xs">incompleto</span>
+                              ) : (
+                                formatHoras(dia.horasTrabalhadas)
+                              )}
+                            </td>
+                            <td className={`px-4 py-2 whitespace-nowrap text-right font-semibold ${
+                              dia.horasExtras === null ? '' : dia.horasExtras < 0 ? 'text-red-600' : 'text-green-600'
+                            }`}>
+                              {dia.status === 'incompleto' ? '—' : formatHoras(dia.horasExtras)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot className="bg-gray-50 border-t-2 border-gray-300">
+                        <tr>
+                          <td colSpan={5} className="px-4 py-3 text-right font-bold text-gray-900">Total do mês</td>
+                          <td className="px-4 py-3 text-right font-bold text-gray-900">{formatHoras(report.totalHorasTrabalhadas)}</td>
+                          <td className={`px-4 py-3 text-right font-bold ${report.totalHorasExtras < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                            {formatHoras(report.totalHorasExtras)}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                  <div className="px-6 py-4 text-xs text-gray-400 border-t border-gray-100">
+                    * Dias com apenas 2 marcações consideram 1 hora de intervalo automática. Dias com 1 ou 3 marcações aparecem como "incompleto" e não entram no somatório. Dias sem nenhuma marcação não entram no somatório.
                   </div>
                 </div>
               );
