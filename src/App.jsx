@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v4.0-icones-atestado-soma';
+const APP_VERSION = 'v4.1-cancelar-resetsenha-semcredenciais';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -448,6 +448,26 @@ const ControlePonto = () => {
         console.error('Erro ao excluir usuário:', error);
         alert('Não foi possível excluir o usuário: ' + error.message);
       }
+    }
+  };
+
+  // Reseta a senha do usuário para o padrão e marca como primeiro acesso,
+  // forçando a criação de uma nova senha no próximo login.
+  const handleResetPassword = async (user) => {
+    if (!window.confirm(`Resetar a senha de ${user.name} para o padrão (123456)? A pessoa precisará criar uma nova senha no próximo login.`)) {
+      return;
+    }
+    try {
+      const atualizados = await supabaseRequest('usuarios', 'PATCH', {
+        query: `?id=eq.${user.id}`,
+        body: { password: '123456', first_access: true }
+      });
+      const userAtualizado = dbUserToApp(atualizados[0]);
+      setUsers(users.map(u => u.id === userAtualizado.id ? userAtualizado : u));
+      alert(`Senha de ${user.name} resetada para 123456.`);
+    } catch (error) {
+      console.error('Erro ao resetar senha:', error);
+      alert('Não foi possível resetar a senha: ' + error.message);
     }
   };
 
@@ -1041,7 +1061,6 @@ const ControlePonto = () => {
                 
                 <div className="mt-6 pt-6 border-t border-gray-200 text-center text-sm text-gray-600">
                   <p>Primeiro acesso? Use a senha padrão: <strong>123456</strong></p>
-                  <p className="mt-2">Admin: admin@admin.com / admin</p>
                 </div>
               </div>
             ) : (
@@ -1444,13 +1463,22 @@ const ControlePonto = () => {
                               <button
                                 onClick={() => handleEditUser(user)}
                                 className="p-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors"
+                                title="Editar dados"
                               >
                                 <Edit2 className="w-5 h-5" />
+                              </button>
+                              <button
+                                onClick={() => handleResetPassword(user)}
+                                className="p-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors"
+                                title="Resetar senha"
+                              >
+                                <Wrench className="w-5 h-5" />
                               </button>
                               <button
                                 onClick={() => handleDeleteUser(user.id)}
                                 className="p-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors"
                                 disabled={user.email === 'admin@admin.com'}
+                                title="Excluir"
                               >
                                 <Trash2 className="w-5 h-5" />
                               </button>
@@ -1979,13 +2007,21 @@ const ControlePonto = () => {
                     </div>
                   )}
 
-                  <button
-                    onClick={handleSaveHorarios}
-                    disabled={resolveSaving}
-                    className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
-                  >
-                    {resolveSaving ? 'Salvando...' : 'Salvar correção'}
-                  </button>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={closeResolveModal}
+                      className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      onClick={handleSaveHorarios}
+                      disabled={resolveSaving}
+                      className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
+                    >
+                      {resolveSaving ? 'Salvando...' : 'Salvar correção'}
+                    </button>
+                  </div>
                   <p className="text-xs text-gray-400 text-center">
                     Isso substitui todos os lançamentos deste dia e marca como ajuste manual.
                   </p>
@@ -2013,13 +2049,21 @@ const ControlePonto = () => {
                     </div>
                   )}
 
-                  <button
-                    onClick={handleMarkHoliday}
-                    disabled={resolveSaving}
-                    className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
-                  >
-                    {resolveSaving ? 'Salvando...' : 'Confirmar feriado'}
-                  </button>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={closeResolveModal}
+                      className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      onClick={handleMarkHoliday}
+                      disabled={resolveSaving}
+                      className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
+                    >
+                      {resolveSaving ? 'Salvando...' : 'Confirmar feriado'}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
