@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle } from 'lucide-react';
+import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper } from 'lucide-react';
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v3.9-ajuste-atestado-justificativa';
+const APP_VERSION = 'v4.0-icones-atestado-soma';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -155,7 +155,7 @@ const ControlePonto = () => {
   
   // Estado para registros de ponto
   const [timeRecords, setTimeRecords] = useState([]);
-  const [holidays, setHolidays] = useState([]); // array de strings 'YYYY-MM-DD'
+  const [holidays, setHolidays] = useState([]); // array de {date, description}
   const [medicalCertificates, setMedicalCertificates] = useState([]); // [{id, userId, date, hours, justification}]
   
   // Estado para consulta
@@ -215,7 +215,7 @@ const ControlePonto = () => {
       setTimeRecords((registros || []).map(dbRecordToApp));
 
       const feriadosDb = await supabaseRequest('feriados', 'GET', { query: '?select=*' });
-      setHolidays((feriadosDb || []).map(f => f.date));
+      setHolidays((feriadosDb || []).map(f => ({ date: f.date, description: f.description })));
 
       const atestadosDb = await supabaseRequest('atestados', 'GET', { query: '?select=*' });
       setMedicalCertificates((atestadosDb || []).map(a => ({
@@ -572,7 +572,7 @@ const ControlePonto = () => {
   // - Dia sem nenhuma marcação = não trabalhado; não entra no somatório.
   const JORNADA_DIARIA_HORAS = 8;
 
-  const getDayMetrics = (dateStr, allRecords, atestado = null) => {
+  const getDayMetrics = (dateStr, allRecords, atestado = null, feriado = null) => {
     const dayRecords = allRecords
       .filter(r => r.date === dateStr)
       .sort((a, b) => a.time.localeCompare(b.time));
@@ -611,12 +611,20 @@ const ControlePonto = () => {
       status = 'completo';
     }
 
-    // Se houver atestado médico cobrindo a jornada inteira e nenhuma marcação
-    // no dia, o dia deixa de ser "sem registro" para fins de inconsistência —
-    // o atestado justifica a ausência completa.
-    if (status === 'sem-registro' && atestado && atestado.hours >= JORNADA_DIARIA_HORAS) {
-      status = 'completo';
-      horasTrabalhadas = 0;
+    // Regras de atestado médico:
+    // - Se há lançamento (2 ou 4 marcações = status "completo"), soma-se as
+    //   horas do atestado às horas realmente trabalhadas.
+    // - Se não há nenhuma marcação ("sem-registro"), as horas trabalhadas do
+    //   dia passam a ser as horas do atestado (cobertura total ou parcial).
+    // - Se há apenas 1 ou 3 marcações ("incompleto"), o atestado não altera
+    //   nada — o dia continua incompleto por falta de marcação de saída/etc.
+    if (atestado) {
+      if (status === 'completo') {
+        horasTrabalhadas = (horasTrabalhadas || 0) + atestado.hours;
+      } else if (status === 'sem-registro') {
+        status = 'completo';
+        horasTrabalhadas = atestado.hours;
+      }
     }
 
     let horasExtras = horasTrabalhadas !== null ? horasTrabalhadas - JORNADA_DIARIA_HORAS : null;
@@ -627,6 +635,11 @@ const ControlePonto = () => {
       horasExtras = Math.max(0, horasExtras);
     }
 
+    // Nova inconsistência: mesmo com atestado, se o total de horas (lançamento
+    // + atestado, ou só atestado quando não há lançamento) ficar abaixo da
+    // jornada diária, ainda é uma inconsistência — falta alguma coisa explicar.
+    const atestadoInsuficiente = !!(atestado && status === 'completo' && horasTrabalhadas < JORNADA_DIARIA_HORAS);
+
     const isManuallyAdjusted = dayRecords.some(r => r.manuallyAdjusted);
     const adjustmentReason = dayRecords.find(r => r.adjustmentReason)?.adjustmentReason || null;
 
@@ -636,6 +649,9 @@ const ControlePonto = () => {
       temAtestado: !!atestado,
       atestadoHoras: atestado ? atestado.hours : null,
       atestadoJustificativa: atestado ? atestado.justification : null,
+      atestadoInsuficiente,
+      isHoliday: !!feriado,
+      holidayDescription: feriado ? feriado.description : null,
     };
   };
 
@@ -658,6 +674,7 @@ const ControlePonto = () => {
     const userRecords = timeRecords.filter(r => r.userId === reportUser);
     const userAtestados = medicalCertificates.filter(a => a.userId === reportUser);
     const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
+    const feriadoPorData = Object.fromEntries(holidays.map(h => [h.date, h]));
 
     const ano = parseInt(reportYear);
     const mes = parseInt(reportMonth); // 1-12
@@ -666,7 +683,7 @@ const ControlePonto = () => {
     const dias = [];
     for (let dia = 1; dia <= diasNoMes; dia++) {
       const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
-      dias.push(getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null));
+      dias.push(getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null, feriadoPorData[dateStr] || null));
     }
 
     const totalHorasTrabalhadas = dias.reduce((acc, d) => acc + (d.horasTrabalhadas || 0), 0);
@@ -698,7 +715,7 @@ const ControlePonto = () => {
     for (let dia = 1; dia <= diasNoMes; dia++) {
       const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
       if (dateStr >= hojeStr) continue; // ignora hoje e datas futuras
-      if (holidays.includes(dateStr)) continue; // dia marcado como feriado — resolvido
+      if (holidays.some(h => h.date === dateStr)) continue; // dia marcado como feriado — resolvido
 
       const metrics = getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null);
       const diaSemana = getDiaSemana(dateStr);
@@ -707,6 +724,11 @@ const ControlePonto = () => {
         const motivo = metrics.saida === null && metrics.fimIntervalo === null
           ? 'Apenas 1 marcação registrada (entrada) — faltam início/fim do intervalo e a saída'
           : '3 marcações registradas (entrada, início e fim do intervalo) — falta a saída';
+        inconsistencias.push({ ...metrics, diaSemana, motivo });
+      } else if (metrics.atestadoInsuficiente) {
+        const motivo = metrics.entrada
+          ? `Atestado de ${metrics.atestadoHoras}h somado às marcações totaliza apenas ${formatHoras(metrics.horasTrabalhadas)} — menos que a jornada de ${JORNADA_DIARIA_HORAS}h`
+          : `Atestado de ${metrics.atestadoHoras}h não cobre a jornada de ${JORNADA_DIARIA_HORAS}h e não há nenhuma marcação de ponto`;
         inconsistencias.push({ ...metrics, diaSemana, motivo });
       } else if (metrics.status === 'sem-registro' && !diaSemana.isFimDeSemana) {
         inconsistencias.push({ ...metrics, diaSemana, motivo: 'Dia útil sem nenhuma marcação de ponto' });
@@ -891,8 +913,10 @@ const ControlePonto = () => {
       });
       setTimeRecords(timeRecords.filter(r => !(r.userId === resolveUserId && r.date === resolveDate)));
 
-      if (!holidays.includes(resolveDate)) {
-        setHolidays([...holidays, resolveDate]);
+      if (!holidays.some(h => h.date === resolveDate)) {
+        setHolidays([...holidays, { date: resolveDate, description: resolveJustificativa.trim() }]);
+      } else {
+        setHolidays(holidays.map(h => h.date === resolveDate ? { ...h, description: resolveJustificativa.trim() } : h));
       }
       closeResolveModal();
     } catch (error) {
@@ -906,6 +930,20 @@ const ControlePonto = () => {
   const formatDate = (dateStr) => {
     const [year, month, day] = dateStr.split('-');
     return `${day}/${month}/${year}`;
+  };
+
+  // Verifica se um dia (já processado por getDayMetrics) deve ser sinalizado
+  // como inconsistência na tabela do relatório — mesma lógica usada na tela
+  // de Inconsistências, mas aplicada linha a linha aqui.
+  const isDiaInconsistente = (dia, diaSemana) => {
+    const hoje = new Date();
+    const hojeStr = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+    if (dia.date >= hojeStr) return false; // hoje e datas futuras não contam
+    if (dia.isHoliday) return false;
+    if (dia.status === 'incompleto') return true;
+    if (dia.atestadoInsuficiente) return true;
+    if (dia.status === 'sem-registro' && !diaSemana.isFimDeSemana) return true;
+    return false;
   };
 
   const NOMES_DIAS_SEMANA = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
@@ -1631,10 +1669,24 @@ const ControlePonto = () => {
                             <td className="px-4 py-2 whitespace-nowrap font-medium">
                               {formatDate(dia.date)}
                               {dia.isManuallyAdjusted && (
-                                <span title={dia.adjustmentReason || 'Ajuste manual'} className="ml-1.5 text-xs text-indigo-500">🔧</span>
+                                <span title={dia.adjustmentReason || 'Ajuste manual'}>
+                                  <Wrench className="w-3.5 h-3.5 inline ml-1.5 text-indigo-500 align-text-top" />
+                                </span>
                               )}
                               {dia.temAtestado && (
-                                <span title={`Atestado médico: ${dia.atestadoHoras}h — ${dia.atestadoJustificativa || ''}`} className="ml-1.5 text-xs">🩺</span>
+                                <span title={`Atestado médico: ${dia.atestadoHoras}h — ${dia.atestadoJustificativa || ''}`}>
+                                  <Stethoscope className="w-3.5 h-3.5 inline ml-1.5 text-rose-500 align-text-top" />
+                                </span>
+                              )}
+                              {dia.isHoliday && (
+                                <span title={`Feriado: ${dia.holidayDescription || ''}`}>
+                                  <PartyPopper className="w-3.5 h-3.5 inline ml-1.5 text-amber-500 align-text-top" />
+                                </span>
+                              )}
+                              {isDiaInconsistente(dia, diaSemana) && (
+                                <span title="Inconsistência">
+                                  <AlertTriangle className="w-3.5 h-3.5 inline ml-1.5 text-red-500 align-text-top" />
+                                </span>
                               )}
                             </td>
                             <td className={`px-4 py-2 whitespace-nowrap ${diaSemana.isFimDeSemana ? 'font-semibold text-gray-500' : ''}`}>{diaSemana.nome}</td>
