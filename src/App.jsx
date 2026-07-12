@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v3.8-resolver-inconsistencias';
+const APP_VERSION = 'v3.9-ajuste-atestado-justificativa';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -66,6 +66,7 @@ const dbRecordToApp = (r) => ({
   longitude: r.longitude,
   address: r.address,
   manuallyAdjusted: r.manually_adjusted || false,
+  adjustmentReason: r.adjustment_reason || null,
 });
 
 // Obtém a localização atual do navegador (com timeout) e retorna coordenadas.
@@ -155,6 +156,7 @@ const ControlePonto = () => {
   // Estado para registros de ponto
   const [timeRecords, setTimeRecords] = useState([]);
   const [holidays, setHolidays] = useState([]); // array de strings 'YYYY-MM-DD'
+  const [medicalCertificates, setMedicalCertificates] = useState([]); // [{id, userId, date, hours, justification}]
   
   // Estado para consulta
   const [filterName, setFilterName] = useState('');
@@ -172,15 +174,19 @@ const ControlePonto = () => {
   const [inconsistencyMonth, setInconsistencyMonth] = useState(String(nowParaDefaults.getMonth() + 1).padStart(2, '0'));
   const [inconsistencyYear, setInconsistencyYear] = useState(String(nowParaDefaults.getFullYear()));
 
-  // Estado para o modal de resolução de inconsistência
+  // Estado para o modal de resolução/ajuste de ponto (usado tanto na tela de
+  // Inconsistências quanto na tela de Relatório, para qualquer dia)
   const [resolveModalOpen, setResolveModalOpen] = useState(false);
   const [resolveModalTab, setResolveModalTab] = useState('horarios'); // 'horarios' | 'feriado'
+  const [resolveUserId, setResolveUserId] = useState('');
   const [resolveDate, setResolveDate] = useState('');
   const [resolveEntrada, setResolveEntrada] = useState('');
   const [resolveInicioIntervalo, setResolveInicioIntervalo] = useState('');
   const [resolveFimIntervalo, setResolveFimIntervalo] = useState('');
   const [resolveSaida, setResolveSaida] = useState('');
-  const [resolveHolidayDesc, setResolveHolidayDesc] = useState('Feriado');
+  const [resolveTemAtestado, setResolveTemAtestado] = useState(false);
+  const [resolveAtestadoHoras, setResolveAtestadoHoras] = useState('');
+  const [resolveJustificativa, setResolveJustificativa] = useState('');
   const [resolveError, setResolveError] = useState('');
   const [resolveSaving, setResolveSaving] = useState(false);
   
@@ -210,6 +216,11 @@ const ControlePonto = () => {
 
       const feriadosDb = await supabaseRequest('feriados', 'GET', { query: '?select=*' });
       setHolidays((feriadosDb || []).map(f => f.date));
+
+      const atestadosDb = await supabaseRequest('atestados', 'GET', { query: '?select=*' });
+      setMedicalCertificates((atestadosDb || []).map(a => ({
+        id: a.id, userId: a.user_id, date: a.date, hours: parseFloat(a.hours), justification: a.justification
+      })));
 
       setStorageAvailable(true);
     } catch (error) {
@@ -559,7 +570,9 @@ const ControlePonto = () => {
   // - 1 ou 3 marcações = dia incompleto (falta alguma marcação); não entra no
   //   somatório de horas.
   // - Dia sem nenhuma marcação = não trabalhado; não entra no somatório.
-  const getDayMetrics = (dateStr, allRecords) => {
+  const JORNADA_DIARIA_HORAS = 8;
+
+  const getDayMetrics = (dateStr, allRecords, atestado = null) => {
     const dayRecords = allRecords
       .filter(r => r.date === dateStr)
       .sort((a, b) => a.time.localeCompare(b.time));
@@ -598,11 +611,32 @@ const ControlePonto = () => {
       status = 'completo';
     }
 
-    const horasExtras = horasTrabalhadas !== null ? horasTrabalhadas - 8 : null;
+    // Se houver atestado médico cobrindo a jornada inteira e nenhuma marcação
+    // no dia, o dia deixa de ser "sem registro" para fins de inconsistência —
+    // o atestado justifica a ausência completa.
+    if (status === 'sem-registro' && atestado && atestado.hours >= JORNADA_DIARIA_HORAS) {
+      status = 'completo';
+      horasTrabalhadas = 0;
+    }
+
+    let horasExtras = horasTrabalhadas !== null ? horasTrabalhadas - JORNADA_DIARIA_HORAS : null;
+
+    // Havendo atestado médico (de qualquer quantidade de horas), a hora extra
+    // do dia nunca fica negativa — a ausência parcial está justificada.
+    if (atestado && horasExtras !== null) {
+      horasExtras = Math.max(0, horasExtras);
+    }
 
     const isManuallyAdjusted = dayRecords.some(r => r.manuallyAdjusted);
+    const adjustmentReason = dayRecords.find(r => r.adjustmentReason)?.adjustmentReason || null;
 
-    return { date: dateStr, entrada, inicioIntervalo, fimIntervalo, saida, horasTrabalhadas, horasExtras, status, isManuallyAdjusted };
+    return {
+      date: dateStr, entrada, inicioIntervalo, fimIntervalo, saida,
+      horasTrabalhadas, horasExtras, status, isManuallyAdjusted, adjustmentReason,
+      temAtestado: !!atestado,
+      atestadoHoras: atestado ? atestado.hours : null,
+      atestadoJustificativa: atestado ? atestado.justification : null,
+    };
   };
 
   const formatHoraCurta = (timeStr) => timeStr ? timeStr.substring(0, 5) : '—';
@@ -622,6 +656,8 @@ const ControlePonto = () => {
 
     const user = users.find(u => u.id === reportUser);
     const userRecords = timeRecords.filter(r => r.userId === reportUser);
+    const userAtestados = medicalCertificates.filter(a => a.userId === reportUser);
+    const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
 
     const ano = parseInt(reportYear);
     const mes = parseInt(reportMonth); // 1-12
@@ -630,7 +666,7 @@ const ControlePonto = () => {
     const dias = [];
     for (let dia = 1; dia <= diasNoMes; dia++) {
       const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
-      dias.push(getDayMetrics(dateStr, userRecords));
+      dias.push(getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null));
     }
 
     const totalHorasTrabalhadas = dias.reduce((acc, d) => acc + (d.horasTrabalhadas || 0), 0);
@@ -648,6 +684,8 @@ const ControlePonto = () => {
 
     const user = users.find(u => u.id === inconsistencyUser);
     const userRecords = timeRecords.filter(r => r.userId === inconsistencyUser);
+    const userAtestados = medicalCertificates.filter(a => a.userId === inconsistencyUser);
+    const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
 
     const ano = parseInt(inconsistencyYear);
     const mes = parseInt(inconsistencyMonth);
@@ -662,7 +700,7 @@ const ControlePonto = () => {
       if (dateStr >= hojeStr) continue; // ignora hoje e datas futuras
       if (holidays.includes(dateStr)) continue; // dia marcado como feriado — resolvido
 
-      const metrics = getDayMetrics(dateStr, userRecords);
+      const metrics = getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null);
       const diaSemana = getDiaSemana(dateStr);
 
       if (metrics.status === 'incompleto') {
@@ -678,15 +716,19 @@ const ControlePonto = () => {
     return { user, inconsistencias };
   };
 
-  // Abre o modal de resolução, pré-preenchendo com os horários já existentes
-  // (se houver) para aquele dia da inconsistência selecionada.
-  const openResolveModal = (inconsistencia) => {
-    setResolveDate(inconsistencia.date);
-    setResolveEntrada(inconsistencia.entrada ? inconsistencia.entrada.substring(0, 5) : '');
-    setResolveInicioIntervalo(inconsistencia.inicioIntervalo ? inconsistencia.inicioIntervalo.substring(0, 5) : '');
-    setResolveFimIntervalo(inconsistencia.fimIntervalo ? inconsistencia.fimIntervalo.substring(0, 5) : '');
-    setResolveSaida(inconsistencia.saida ? inconsistencia.saida.substring(0, 5) : '');
-    setResolveHolidayDesc('Feriado');
+  // Abre o modal de ajuste de ponto, pré-preenchendo com o que já existe
+  // naquele dia. Pode ser chamado tanto a partir de uma inconsistência
+  // quanto de qualquer dia normal na tela de Relatório.
+  const openResolveModal = (dia, userId) => {
+    setResolveUserId(userId);
+    setResolveDate(dia.date);
+    setResolveEntrada(dia.entrada ? dia.entrada.substring(0, 5) : '');
+    setResolveInicioIntervalo(dia.inicioIntervalo ? dia.inicioIntervalo.substring(0, 5) : '');
+    setResolveFimIntervalo(dia.fimIntervalo ? dia.fimIntervalo.substring(0, 5) : '');
+    setResolveSaida(dia.saida ? dia.saida.substring(0, 5) : '');
+    setResolveTemAtestado(!!dia.temAtestado);
+    setResolveAtestadoHoras(dia.atestadoHoras != null ? String(dia.atestadoHoras) : '');
+    setResolveJustificativa('');
     setResolveError('');
     setResolveModalTab('horarios');
     setResolveModalOpen(true);
@@ -697,23 +739,44 @@ const ControlePonto = () => {
     setResolveError('');
   };
 
-  // Salva a correção de horários: valida, apaga os lançamentos antigos do dia
-  // e insere os novos, marcados como ajuste manual.
+  // Salva a correção de horários (e, se marcado, o atestado médico): valida,
+  // apaga os lançamentos antigos do dia e insere os novos, marcados como
+  // ajuste manual com a justificativa informada.
   const handleSaveHorarios = async () => {
     setResolveError('');
 
-    if (!resolveEntrada || !resolveSaida) {
-      setResolveError('Informe pelo menos um horário de entrada e um de saída.');
+    if (!resolveJustificativa.trim()) {
+      setResolveError('Informe a justificativa do ajuste.');
+      return;
+    }
+
+    if (resolveTemAtestado && (!resolveAtestadoHoras || parseFloat(resolveAtestadoHoras) <= 0)) {
+      setResolveError('Informe a quantidade de horas do atestado médico.');
+      return;
+    }
+
+    const atestadoHorasNum = resolveTemAtestado ? parseFloat(resolveAtestadoHoras) : null;
+    const coberturaIntegral = resolveTemAtestado && atestadoHorasNum >= JORNADA_DIARIA_HORAS;
+
+    // Entrada e saída só podem ficar em branco quando o atestado cobre a
+    // jornada inteira (dia sem nenhuma marcação, justificado integralmente).
+    if (!coberturaIntegral && (!resolveEntrada || !resolveSaida)) {
+      setResolveError('Informe entrada e saída (só é possível deixar em branco se o atestado cobrir a jornada inteira de 8h).');
       return;
     }
 
     // Monta a lista de horários preenchidos, na ordem esperada
     const horarios = [
-      { label: 'entrada', valor: resolveEntrada },
+      ...(resolveEntrada ? [{ label: 'entrada', valor: resolveEntrada }] : []),
       ...(resolveInicioIntervalo ? [{ label: 'início intervalo', valor: resolveInicioIntervalo }] : []),
       ...(resolveFimIntervalo ? [{ label: 'fim intervalo', valor: resolveFimIntervalo }] : []),
-      { label: 'saída', valor: resolveSaida },
+      ...(resolveSaida ? [{ label: 'saída', valor: resolveSaida }] : []),
     ];
+
+    if (horarios.length > 0 && (!resolveEntrada || !resolveSaida)) {
+      setResolveError('Se informar algum horário, entrada e saída são obrigatórios.');
+      return;
+    }
 
     // Valida ordem cronológica estrita entre os horários preenchidos
     for (let i = 0; i < horarios.length - 1; i++) {
@@ -730,32 +793,63 @@ const ControlePonto = () => {
 
     setResolveSaving(true);
     try {
-      const usuarioAlvo = users.find(u => u.id === inconsistencyUser);
+      const usuarioAlvo = users.find(u => u.id === resolveUserId);
 
       // Remove os lançamentos antigos daquele dia (se houver)
       await supabaseRequest('registros_ponto', 'DELETE', {
-        query: `?user_id=eq.${inconsistencyUser}&date=eq.${resolveDate}`
+        query: `?user_id=eq.${resolveUserId}&date=eq.${resolveDate}`
       });
 
-      const novosPunches = horarios.map(h => `${h.valor}:00`);
-      const linhas = novosPunches.map((time, idx) => ({
-        user_id: inconsistencyUser,
-        user_name: usuarioAlvo.name,
-        date: resolveDate,
-        time: time,
-        datetime: `${resolveDate}T${time}`,
-        type: idx % 2 === 0 ? 'entrada' : 'saída',
-        manually_adjusted: true,
-      }));
-
-      const inseridos = await supabaseRequest('registros_ponto', 'POST', { body: linhas });
-      const novosRegistros = inseridos.map(dbRecordToApp);
+      let novosRegistros = [];
+      if (horarios.length > 0) {
+        const linhas = horarios.map((h, idx) => ({
+          user_id: resolveUserId,
+          user_name: usuarioAlvo.name,
+          date: resolveDate,
+          time: `${h.valor}:00`,
+          datetime: `${resolveDate}T${h.valor}:00`,
+          type: idx % 2 === 0 ? 'entrada' : 'saída',
+          manually_adjusted: true,
+          adjustment_reason: resolveJustificativa.trim(),
+        }));
+        const inseridos = await supabaseRequest('registros_ponto', 'POST', { body: linhas });
+        novosRegistros = inseridos.map(dbRecordToApp);
+      }
 
       // Atualiza o estado local: remove os antigos daquele dia/usuário e adiciona os novos
       setTimeRecords([
-        ...timeRecords.filter(r => !(r.userId === inconsistencyUser && r.date === resolveDate)),
+        ...timeRecords.filter(r => !(r.userId === resolveUserId && r.date === resolveDate)),
         ...novosRegistros,
       ]);
+
+      // Salva (ou remove) o atestado médico para este dia
+      if (resolveTemAtestado) {
+        const existente = medicalCertificates.find(a => a.userId === resolveUserId && a.date === resolveDate);
+        if (existente) {
+          await supabaseRequest('atestados', 'PATCH', {
+            query: `?id=eq.${existente.id}`,
+            body: { hours: atestadoHorasNum, justification: resolveJustificativa.trim() }
+          });
+          setMedicalCertificates(medicalCertificates.map(a =>
+            a.id === existente.id ? { ...a, hours: atestadoHorasNum, justification: resolveJustificativa.trim() } : a
+          ));
+        } else {
+          const inserido = await supabaseRequest('atestados', 'POST', {
+            body: { user_id: resolveUserId, date: resolveDate, hours: atestadoHorasNum, justification: resolveJustificativa.trim() }
+          });
+          const novo = inserido[0];
+          setMedicalCertificates([...medicalCertificates, {
+            id: novo.id, userId: novo.user_id, date: novo.date, hours: parseFloat(novo.hours), justification: novo.justification
+          }]);
+        }
+      } else {
+        // Se desmarcou o atestado, remove um eventual atestado salvo antes para este dia
+        const existente = medicalCertificates.find(a => a.userId === resolveUserId && a.date === resolveDate);
+        if (existente) {
+          await supabaseRequest('atestados', 'DELETE', { query: `?id=eq.${existente.id}` });
+          setMedicalCertificates(medicalCertificates.filter(a => a.id !== existente.id));
+        }
+      }
 
       closeResolveModal();
     } catch (error) {
@@ -770,27 +864,36 @@ const ControlePonto = () => {
   // e remove eventuais lançamentos equivocados deste funcionário nesse dia.
   const handleMarkHoliday = async () => {
     setResolveError('');
+
+    if (!resolveJustificativa.trim()) {
+      setResolveError('Informe a justificativa do ajuste.');
+      return;
+    }
+
     setResolveSaving(true);
     try {
-      await supabaseRequest('feriados', 'POST', {
-        body: { date: resolveDate, description: resolveHolidayDesc || 'Feriado' },
-        query: '',
-      }).catch(async (err) => {
+      try {
+        await supabaseRequest('feriados', 'POST', {
+          body: { date: resolveDate, description: resolveJustificativa.trim() },
+        });
+      } catch (err) {
         // Se já existir (conflito de data única), atualiza a descrição em vez de falhar
         await supabaseRequest('feriados', 'PATCH', {
           query: `?date=eq.${resolveDate}`,
-          body: { description: resolveHolidayDesc || 'Feriado' }
+          body: { description: resolveJustificativa.trim() }
         });
-      });
+      }
 
       // Remove lançamentos equivocados deste funcionário nesse dia, já que
       // um feriado não deveria ter marcações de ponto.
       await supabaseRequest('registros_ponto', 'DELETE', {
-        query: `?user_id=eq.${inconsistencyUser}&date=eq.${resolveDate}`
+        query: `?user_id=eq.${resolveUserId}&date=eq.${resolveDate}`
       });
-      setTimeRecords(timeRecords.filter(r => !(r.userId === inconsistencyUser && r.date === resolveDate)));
+      setTimeRecords(timeRecords.filter(r => !(r.userId === resolveUserId && r.date === resolveDate)));
 
-      setHolidays([...holidays, resolveDate]);
+      if (!holidays.includes(resolveDate)) {
+        setHolidays([...holidays, resolveDate]);
+      }
       closeResolveModal();
     } catch (error) {
       console.error('Erro ao marcar feriado:', error);
@@ -1517,6 +1620,7 @@ const ControlePonto = () => {
                           <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Saída</th>
                           <th className="px-4 py-3 text-right font-semibold text-gray-700 whitespace-nowrap">Horas trabalhadas</th>
                           <th className="px-4 py-3 text-right font-semibold text-gray-700 whitespace-nowrap">Horas extras</th>
+                          <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">Ajustar</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
@@ -1527,7 +1631,10 @@ const ControlePonto = () => {
                             <td className="px-4 py-2 whitespace-nowrap font-medium">
                               {formatDate(dia.date)}
                               {dia.isManuallyAdjusted && (
-                                <span title="Ajuste manual" className="ml-1.5 text-xs text-indigo-500">🔧</span>
+                                <span title={dia.adjustmentReason || 'Ajuste manual'} className="ml-1.5 text-xs text-indigo-500">🔧</span>
+                              )}
+                              {dia.temAtestado && (
+                                <span title={`Atestado médico: ${dia.atestadoHoras}h — ${dia.atestadoJustificativa || ''}`} className="ml-1.5 text-xs">🩺</span>
                               )}
                             </td>
                             <td className={`px-4 py-2 whitespace-nowrap ${diaSemana.isFimDeSemana ? 'font-semibold text-gray-500' : ''}`}>{diaSemana.nome}</td>
@@ -1547,6 +1654,15 @@ const ControlePonto = () => {
                             }`}>
                               {dia.status === 'incompleto' ? '—' : formatHoras(dia.horasExtras)}
                             </td>
+                            <td className="px-4 py-2 whitespace-nowrap text-center">
+                              <button
+                                onClick={() => openResolveModal(dia, reportUser)}
+                                className="text-gray-400 hover:text-indigo-600 transition-colors"
+                                title="Ajustar este dia"
+                              >
+                                <Edit2 className="w-4 h-4 inline" />
+                              </button>
+                            </td>
                           </tr>
                           );
                         })}
@@ -1558,6 +1674,7 @@ const ControlePonto = () => {
                           <td className={`px-4 py-3 text-right font-bold ${report.totalHorasExtras < 0 ? 'text-red-600' : 'text-green-600'}`}>
                             {formatHoras(report.totalHorasExtras)}
                           </td>
+                          <td></td>
                         </tr>
                       </tfoot>
                     </table>
@@ -1661,7 +1778,7 @@ const ControlePonto = () => {
                                 {formatDate(inc.date)} — {inc.diaSemana.nome}
                               </h4>
                               <button
-                                onClick={() => openResolveModal(inc)}
+                                onClick={() => openResolveModal(inc, inconsistencyUser)}
                                 className="px-3 py-1.5 bg-indigo-600 text-white text-xs font-semibold rounded-lg hover:bg-indigo-700 transition-colors flex-shrink-0"
                               >
                                 Corrigir
@@ -1686,13 +1803,13 @@ const ControlePonto = () => {
         )}
       </main>
 
-      {/* Modal de resolução de inconsistência */}
+      {/* Modal de ajuste/resolução de ponto */}
       {resolveModalOpen && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-lg max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
               <h3 className="text-lg font-bold text-gray-900">
-                Corrigir {formatDate(resolveDate)}
+                Ajustar {formatDate(resolveDate)}
               </h3>
               <button onClick={closeResolveModal} className="p-1 text-gray-400 hover:text-gray-600">
                 <X className="w-6 h-6" />
@@ -1723,7 +1840,7 @@ const ControlePonto = () => {
                 <div className="space-y-4">
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Entrada *</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Entrada {!resolveTemAtestado || parseFloat(resolveAtestadoHoras || 0) < JORNADA_DIARIA_HORAS ? '*' : ''}</label>
                       <input
                         type="time"
                         value={resolveEntrada}
@@ -1732,7 +1849,7 @@ const ControlePonto = () => {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Saída *</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Saída {!resolveTemAtestado || parseFloat(resolveAtestadoHoras || 0) < JORNADA_DIARIA_HORAS ? '*' : ''}</label>
                       <input
                         type="time"
                         value={resolveSaida}
@@ -1760,8 +1877,49 @@ const ControlePonto = () => {
                     </div>
                   </div>
                   <p className="text-xs text-gray-400">
-                    Entrada e Saída são obrigatórios. Intervalo é opcional, mas se preencher um, precisa preencher os dois.
+                    Entrada e Saída são obrigatórios (exceto se o atestado abaixo cobrir a jornada inteira de {JORNADA_DIARIA_HORAS}h). Intervalo é opcional, mas se preencher um, precisa preencher os dois.
                   </p>
+
+                  <div className="border-t border-gray-200 pt-4">
+                    <label className="flex items-center gap-2 mb-2">
+                      <input
+                        type="checkbox"
+                        checked={resolveTemAtestado}
+                        onChange={(e) => setResolveTemAtestado(e.target.checked)}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-sm font-medium text-gray-700">🩺 Este dia teve atestado médico</span>
+                    </label>
+                    {resolveTemAtestado && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Quantidade de horas do atestado *</label>
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0.5"
+                          max="24"
+                          value={resolveAtestadoHoras}
+                          onChange={(e) => setResolveAtestadoHoras(e.target.value)}
+                          placeholder="Ex: 4"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                        />
+                        <p className="text-xs text-gray-400 mt-1">
+                          Com atestado, a hora extra deste dia nunca fica negativa. Se as horas do atestado forem iguais a {JORNADA_DIARIA_HORAS}h, não é preciso informar entrada/saída.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Justificativa *</label>
+                    <textarea
+                      value={resolveJustificativa}
+                      onChange={(e) => setResolveJustificativa(e.target.value)}
+                      placeholder="Explique o motivo deste ajuste"
+                      rows={2}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none resize-none"
+                    />
+                  </div>
 
                   {resolveError && (
                     <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
@@ -1785,14 +1943,15 @@ const ControlePonto = () => {
                   <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
                     Marcar este dia como feriado remove qualquer lançamento deste funcionário na data e impede que ela volte a aparecer como inconsistência.
                   </div>
+
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Descrição (opcional)</label>
-                    <input
-                      type="text"
-                      value={resolveHolidayDesc}
-                      onChange={(e) => setResolveHolidayDesc(e.target.value)}
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Justificativa *</label>
+                    <textarea
+                      value={resolveJustificativa}
+                      onChange={(e) => setResolveJustificativa(e.target.value)}
                       placeholder="Ex: Feriado municipal"
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                      rows={2}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none resize-none"
                     />
                   </div>
 
