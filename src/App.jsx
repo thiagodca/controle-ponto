@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v4.1-cancelar-resetsenha-semcredenciais';
+const APP_VERSION = 'v4.2-remove-tela-registros';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -157,11 +157,6 @@ const ControlePonto = () => {
   const [timeRecords, setTimeRecords] = useState([]);
   const [holidays, setHolidays] = useState([]); // array de {date, description}
   const [medicalCertificates, setMedicalCertificates] = useState([]); // [{id, userId, date, hours, justification}]
-  
-  // Estado para consulta
-  const [filterName, setFilterName] = useState('');
-  const [filterMonth, setFilterMonth] = useState('');
-  const [filterYear, setFilterYear] = useState('');
   
   // Estado para relatório — mês e ano do relatório vêm pré-selecionados com o mês atual
   const nowParaDefaults = new Date();
@@ -562,17 +557,6 @@ const ControlePonto = () => {
     setTimeout(() => setClockMessage(null), 5000);
   };
 
-  // Função para filtrar registros
-  const getFilteredRecords = () => {
-    return timeRecords.filter(record => {
-      const matchName = !filterName || record.userName.toLowerCase().includes(filterName.toLowerCase());
-      const matchMonth = !filterMonth || record.date.substring(5, 7) === filterMonth;
-      const matchYear = !filterYear || record.date.substring(0, 4) === filterYear;
-      return matchName && matchMonth && matchYear;
-    }).sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
-  };
-
-  // Função para calcular horas trabalhadas
   // Converte "HH:MM:SS" em minutos desde a meia-noite, para facilitar cálculos
   const timeToMinutes = (timeStr) => {
     if (!timeStr) return null;
@@ -1188,18 +1172,6 @@ const ControlePonto = () => {
                 </button>
                 
                 <button
-                  onClick={() => setActiveView('records')}
-                  className={`px-3 sm:px-6 py-3 sm:py-4 text-sm sm:text-base font-medium transition-colors border-b-2 ${
-                    activeView === 'records'
-                      ? 'border-indigo-600 text-indigo-600'
-                      : 'border-transparent text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  <Search className="inline w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
-                  Registros
-                </button>
-                
-                <button
                   onClick={() => setActiveView('report')}
                   className={`px-3 sm:px-6 py-3 sm:py-4 text-sm sm:text-base font-medium transition-colors border-b-2 ${
                     activeView === 'report'
@@ -1490,113 +1462,6 @@ const ControlePonto = () => {
                   ))}
                 </tbody>
               </table>
-            </div>
-          </div>
-        )}
-
-        {/* Tela de Consulta de Registros */}
-        {activeView === 'records' && currentUser?.profile === 'admin' && (
-          <div>
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Consultar Registros de Ponto</h2>
-            
-            <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
-              <h3 className="text-lg font-semibold text-gray-800 mb-4">Filtros</h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Nome do Funcionário</label>
-                  <input
-                    type="text"
-                    value={filterName}
-                    onChange={(e) => setFilterName(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                    placeholder="Digite o nome..."
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Mês</label>
-                  <select
-                    value={filterMonth}
-                    onChange={(e) => setFilterMonth(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                  >
-                    <option value="">Todos</option>
-                    <option value="01">Janeiro</option>
-                    <option value="02">Fevereiro</option>
-                    <option value="03">Março</option>
-                    <option value="04">Abril</option>
-                    <option value="05">Maio</option>
-                    <option value="06">Junho</option>
-                    <option value="07">Julho</option>
-                    <option value="08">Agosto</option>
-                    <option value="09">Setembro</option>
-                    <option value="10">Outubro</option>
-                    <option value="11">Novembro</option>
-                    <option value="12">Dezembro</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Ano</label>
-                  <input
-                    type="number"
-                    value={filterYear}
-                    onChange={(e) => setFilterYear(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                    placeholder="2024"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-              <table className="w-full">
-                <thead className="bg-gray-50 border-b border-gray-200">
-                  <tr>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Funcionário</th>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Data</th>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Hora</th>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Tipo</th>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Localização</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {getFilteredRecords().map(record => (
-                    <tr key={record.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-6 py-4 font-medium text-gray-900">{record.userName}</td>
-                      <td className="px-6 py-4 text-gray-600">{formatDate(record.date)}</td>
-                      <td className="px-6 py-4 text-gray-600 font-mono">{record.time}</td>
-                      <td className="px-6 py-4">
-                        <span className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
-                          record.type === 'entrada' 
-                            ? 'bg-green-100 text-green-700' 
-                            : 'bg-red-100 text-red-700'
-                        }`}>
-                          {record.type.toUpperCase()}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-gray-500 text-xs max-w-xs">
-                        {record.address ? (
-                          <a
-                            href={`https://www.google.com/maps?q=${record.latitude},${record.longitude}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-indigo-600 hover:underline"
-                            title={record.address}
-                          >
-                            📍 {record.address.split(',').slice(0, 2).join(',')}
-                          </a>
-                        ) : (
-                          <span className="text-gray-300">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {getFilteredRecords().length === 0 && (
-                <div className="text-center py-12 text-gray-500">
-                  Nenhum registro encontrado
-                </div>
-              )}
             </div>
           </div>
         )}
