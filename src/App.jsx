@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v3.7-inconsist-sem-marcacao';
+const APP_VERSION = 'v3.8-resolver-inconsistencias';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -65,6 +65,7 @@ const dbRecordToApp = (r) => ({
   latitude: r.latitude,
   longitude: r.longitude,
   address: r.address,
+  manuallyAdjusted: r.manually_adjusted || false,
 });
 
 // Obtém a localização atual do navegador (com timeout) e retorna coordenadas.
@@ -153,6 +154,7 @@ const ControlePonto = () => {
   
   // Estado para registros de ponto
   const [timeRecords, setTimeRecords] = useState([]);
+  const [holidays, setHolidays] = useState([]); // array de strings 'YYYY-MM-DD'
   
   // Estado para consulta
   const [filterName, setFilterName] = useState('');
@@ -169,6 +171,18 @@ const ControlePonto = () => {
   const [inconsistencyUser, setInconsistencyUser] = useState('');
   const [inconsistencyMonth, setInconsistencyMonth] = useState(String(nowParaDefaults.getMonth() + 1).padStart(2, '0'));
   const [inconsistencyYear, setInconsistencyYear] = useState(String(nowParaDefaults.getFullYear()));
+
+  // Estado para o modal de resolução de inconsistência
+  const [resolveModalOpen, setResolveModalOpen] = useState(false);
+  const [resolveModalTab, setResolveModalTab] = useState('horarios'); // 'horarios' | 'feriado'
+  const [resolveDate, setResolveDate] = useState('');
+  const [resolveEntrada, setResolveEntrada] = useState('');
+  const [resolveInicioIntervalo, setResolveInicioIntervalo] = useState('');
+  const [resolveFimIntervalo, setResolveFimIntervalo] = useState('');
+  const [resolveSaida, setResolveSaida] = useState('');
+  const [resolveHolidayDesc, setResolveHolidayDesc] = useState('Feriado');
+  const [resolveError, setResolveError] = useState('');
+  const [resolveSaving, setResolveSaving] = useState(false);
   
   // Estado de carregamento inicial e mensagens de erro (inline, não usa alert)
   const [isLoading, setIsLoading] = useState(true);
@@ -193,6 +207,9 @@ const ControlePonto = () => {
 
       const registros = await supabaseRequest('registros_ponto', 'GET', { query: '?select=*&order=datetime.asc' });
       setTimeRecords((registros || []).map(dbRecordToApp));
+
+      const feriadosDb = await supabaseRequest('feriados', 'GET', { query: '?select=*' });
+      setHolidays((feriadosDb || []).map(f => f.date));
 
       setStorageAvailable(true);
     } catch (error) {
@@ -583,7 +600,9 @@ const ControlePonto = () => {
 
     const horasExtras = horasTrabalhadas !== null ? horasTrabalhadas - 8 : null;
 
-    return { date: dateStr, entrada, inicioIntervalo, fimIntervalo, saida, horasTrabalhadas, horasExtras, status };
+    const isManuallyAdjusted = dayRecords.some(r => r.manuallyAdjusted);
+
+    return { date: dateStr, entrada, inicioIntervalo, fimIntervalo, saida, horasTrabalhadas, horasExtras, status, isManuallyAdjusted };
   };
 
   const formatHoraCurta = (timeStr) => timeStr ? timeStr.substring(0, 5) : '—';
@@ -641,6 +660,7 @@ const ControlePonto = () => {
     for (let dia = 1; dia <= diasNoMes; dia++) {
       const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
       if (dateStr >= hojeStr) continue; // ignora hoje e datas futuras
+      if (holidays.includes(dateStr)) continue; // dia marcado como feriado — resolvido
 
       const metrics = getDayMetrics(dateStr, userRecords);
       const diaSemana = getDiaSemana(dateStr);
@@ -656,6 +676,128 @@ const ControlePonto = () => {
     }
 
     return { user, inconsistencias };
+  };
+
+  // Abre o modal de resolução, pré-preenchendo com os horários já existentes
+  // (se houver) para aquele dia da inconsistência selecionada.
+  const openResolveModal = (inconsistencia) => {
+    setResolveDate(inconsistencia.date);
+    setResolveEntrada(inconsistencia.entrada ? inconsistencia.entrada.substring(0, 5) : '');
+    setResolveInicioIntervalo(inconsistencia.inicioIntervalo ? inconsistencia.inicioIntervalo.substring(0, 5) : '');
+    setResolveFimIntervalo(inconsistencia.fimIntervalo ? inconsistencia.fimIntervalo.substring(0, 5) : '');
+    setResolveSaida(inconsistencia.saida ? inconsistencia.saida.substring(0, 5) : '');
+    setResolveHolidayDesc('Feriado');
+    setResolveError('');
+    setResolveModalTab('horarios');
+    setResolveModalOpen(true);
+  };
+
+  const closeResolveModal = () => {
+    setResolveModalOpen(false);
+    setResolveError('');
+  };
+
+  // Salva a correção de horários: valida, apaga os lançamentos antigos do dia
+  // e insere os novos, marcados como ajuste manual.
+  const handleSaveHorarios = async () => {
+    setResolveError('');
+
+    if (!resolveEntrada || !resolveSaida) {
+      setResolveError('Informe pelo menos um horário de entrada e um de saída.');
+      return;
+    }
+
+    // Monta a lista de horários preenchidos, na ordem esperada
+    const horarios = [
+      { label: 'entrada', valor: resolveEntrada },
+      ...(resolveInicioIntervalo ? [{ label: 'início intervalo', valor: resolveInicioIntervalo }] : []),
+      ...(resolveFimIntervalo ? [{ label: 'fim intervalo', valor: resolveFimIntervalo }] : []),
+      { label: 'saída', valor: resolveSaida },
+    ];
+
+    // Valida ordem cronológica estrita entre os horários preenchidos
+    for (let i = 0; i < horarios.length - 1; i++) {
+      if (horarios[i].valor >= horarios[i + 1].valor) {
+        setResolveError(`O horário de "${horarios[i + 1].label}" precisa ser depois do de "${horarios[i].label}".`);
+        return;
+      }
+    }
+    // Regra explícita: início/fim de intervalo, se informados, devem ambos estar presentes
+    if ((resolveInicioIntervalo && !resolveFimIntervalo) || (!resolveInicioIntervalo && resolveFimIntervalo)) {
+      setResolveError('Preencha início E fim do intervalo, ou deixe os dois em branco.');
+      return;
+    }
+
+    setResolveSaving(true);
+    try {
+      const usuarioAlvo = users.find(u => u.id === inconsistencyUser);
+
+      // Remove os lançamentos antigos daquele dia (se houver)
+      await supabaseRequest('registros_ponto', 'DELETE', {
+        query: `?user_id=eq.${inconsistencyUser}&date=eq.${resolveDate}`
+      });
+
+      const novosPunches = horarios.map(h => `${h.valor}:00`);
+      const linhas = novosPunches.map((time, idx) => ({
+        user_id: inconsistencyUser,
+        user_name: usuarioAlvo.name,
+        date: resolveDate,
+        time: time,
+        datetime: `${resolveDate}T${time}`,
+        type: idx % 2 === 0 ? 'entrada' : 'saída',
+        manually_adjusted: true,
+      }));
+
+      const inseridos = await supabaseRequest('registros_ponto', 'POST', { body: linhas });
+      const novosRegistros = inseridos.map(dbRecordToApp);
+
+      // Atualiza o estado local: remove os antigos daquele dia/usuário e adiciona os novos
+      setTimeRecords([
+        ...timeRecords.filter(r => !(r.userId === inconsistencyUser && r.date === resolveDate)),
+        ...novosRegistros,
+      ]);
+
+      closeResolveModal();
+    } catch (error) {
+      console.error('Erro ao salvar correção:', error);
+      setResolveError('Erro ao salvar: ' + error.message);
+    } finally {
+      setResolveSaving(false);
+    }
+  };
+
+  // Marca o dia como feriado: some da lista de inconsistências dali pra frente,
+  // e remove eventuais lançamentos equivocados deste funcionário nesse dia.
+  const handleMarkHoliday = async () => {
+    setResolveError('');
+    setResolveSaving(true);
+    try {
+      await supabaseRequest('feriados', 'POST', {
+        body: { date: resolveDate, description: resolveHolidayDesc || 'Feriado' },
+        query: '',
+      }).catch(async (err) => {
+        // Se já existir (conflito de data única), atualiza a descrição em vez de falhar
+        await supabaseRequest('feriados', 'PATCH', {
+          query: `?date=eq.${resolveDate}`,
+          body: { description: resolveHolidayDesc || 'Feriado' }
+        });
+      });
+
+      // Remove lançamentos equivocados deste funcionário nesse dia, já que
+      // um feriado não deveria ter marcações de ponto.
+      await supabaseRequest('registros_ponto', 'DELETE', {
+        query: `?user_id=eq.${inconsistencyUser}&date=eq.${resolveDate}`
+      });
+      setTimeRecords(timeRecords.filter(r => !(r.userId === inconsistencyUser && r.date === resolveDate)));
+
+      setHolidays([...holidays, resolveDate]);
+      closeResolveModal();
+    } catch (error) {
+      console.error('Erro ao marcar feriado:', error);
+      setResolveError('Erro ao salvar: ' + error.message);
+    } finally {
+      setResolveSaving(false);
+    }
   };
 
   const formatDate = (dateStr) => {
@@ -1382,7 +1524,12 @@ const ControlePonto = () => {
                           const diaSemana = getDiaSemana(dia.date);
                           return (
                           <tr key={dia.date} className={`${dia.status === 'sem-registro' ? 'text-gray-300' : 'text-gray-700'} ${diaSemana.isFimDeSemana ? 'bg-gray-50' : ''}`}>
-                            <td className="px-4 py-2 whitespace-nowrap font-medium">{formatDate(dia.date)}</td>
+                            <td className="px-4 py-2 whitespace-nowrap font-medium">
+                              {formatDate(dia.date)}
+                              {dia.isManuallyAdjusted && (
+                                <span title="Ajuste manual" className="ml-1.5 text-xs text-indigo-500">🔧</span>
+                              )}
+                            </td>
                             <td className={`px-4 py-2 whitespace-nowrap ${diaSemana.isFimDeSemana ? 'font-semibold text-gray-500' : ''}`}>{diaSemana.nome}</td>
                             <td className="px-4 py-2 whitespace-nowrap font-mono">{formatHoraCurta(dia.entrada)}</td>
                             <td className="px-4 py-2 whitespace-nowrap font-mono">{formatHoraCurta(dia.inicioIntervalo)}</td>
@@ -1513,6 +1660,12 @@ const ControlePonto = () => {
                               <h4 className="font-semibold text-gray-900">
                                 {formatDate(inc.date)} — {inc.diaSemana.nome}
                               </h4>
+                              <button
+                                onClick={() => openResolveModal(inc)}
+                                className="px-3 py-1.5 bg-indigo-600 text-white text-xs font-semibold rounded-lg hover:bg-indigo-700 transition-colors flex-shrink-0"
+                              >
+                                Corrigir
+                              </button>
                             </div>
                             <p className="text-sm text-amber-800 mb-2">{inc.motivo}</p>
                             <div className="flex flex-wrap gap-3 text-xs text-gray-600 font-mono">
@@ -1532,6 +1685,136 @@ const ControlePonto = () => {
           </div>
         )}
       </main>
+
+      {/* Modal de resolução de inconsistência */}
+      {resolveModalOpen && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <h3 className="text-lg font-bold text-gray-900">
+                Corrigir {formatDate(resolveDate)}
+              </h3>
+              <button onClick={closeResolveModal} className="p-1 text-gray-400 hover:text-gray-600">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="flex border-b border-gray-200">
+              <button
+                onClick={() => setResolveModalTab('horarios')}
+                className={`flex-1 py-3 text-sm font-semibold transition-colors ${
+                  resolveModalTab === 'horarios' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500'
+                }`}
+              >
+                Corrigir horários
+              </button>
+              <button
+                onClick={() => setResolveModalTab('feriado')}
+                className={`flex-1 py-3 text-sm font-semibold transition-colors ${
+                  resolveModalTab === 'feriado' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500'
+                }`}
+              >
+                Marcar como feriado
+              </button>
+            </div>
+
+            <div className="p-5">
+              {resolveModalTab === 'horarios' ? (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Entrada *</label>
+                      <input
+                        type="time"
+                        value={resolveEntrada}
+                        onChange={(e) => setResolveEntrada(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Saída *</label>
+                      <input
+                        type="time"
+                        value={resolveSaida}
+                        onChange={(e) => setResolveSaida(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Início intervalo</label>
+                      <input
+                        type="time"
+                        value={resolveInicioIntervalo}
+                        onChange={(e) => setResolveInicioIntervalo(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Fim intervalo</label>
+                      <input
+                        type="time"
+                        value={resolveFimIntervalo}
+                        onChange={(e) => setResolveFimIntervalo(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    Entrada e Saída são obrigatórios. Intervalo é opcional, mas se preencher um, precisa preencher os dois.
+                  </p>
+
+                  {resolveError && (
+                    <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
+                      {resolveError}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={handleSaveHorarios}
+                    disabled={resolveSaving}
+                    className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
+                  >
+                    {resolveSaving ? 'Salvando...' : 'Salvar correção'}
+                  </button>
+                  <p className="text-xs text-gray-400 text-center">
+                    Isso substitui todos os lançamentos deste dia e marca como ajuste manual.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
+                    Marcar este dia como feriado remove qualquer lançamento deste funcionário na data e impede que ela volte a aparecer como inconsistência.
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Descrição (opcional)</label>
+                    <input
+                      type="text"
+                      value={resolveHolidayDesc}
+                      onChange={(e) => setResolveHolidayDesc(e.target.value)}
+                      placeholder="Ex: Feriado municipal"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+
+                  {resolveError && (
+                    <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
+                      {resolveError}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={handleMarkHoliday}
+                    disabled={resolveSaving}
+                    className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
+                  >
+                    {resolveSaving ? 'Salvando...' : 'Confirmar feriado'}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal de confirmação de ponto com mapa (somente visualização) */}
       {clockModalOpen && (
