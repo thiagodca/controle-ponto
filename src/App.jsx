@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v3.6-inconsistencias';
+const APP_VERSION = 'v3.7-inconsist-sem-marcacao';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -643,13 +643,16 @@ const ControlePonto = () => {
       if (dateStr >= hojeStr) continue; // ignora hoje e datas futuras
 
       const metrics = getDayMetrics(dateStr, userRecords);
-      if (metrics.status !== 'incompleto') continue;
+      const diaSemana = getDiaSemana(dateStr);
 
-      const motivo = metrics.saida === null && metrics.fimIntervalo === null
-        ? 'Apenas 1 marcação registrada (entrada) — faltam início/fim do intervalo e a saída'
-        : '3 marcações registradas (entrada, início e fim do intervalo) — falta a saída';
-
-      inconsistencias.push({ ...metrics, diaSemana: getDiaSemana(dateStr), motivo });
+      if (metrics.status === 'incompleto') {
+        const motivo = metrics.saida === null && metrics.fimIntervalo === null
+          ? 'Apenas 1 marcação registrada (entrada) — faltam início/fim do intervalo e a saída'
+          : '3 marcações registradas (entrada, início e fim do intervalo) — falta a saída';
+        inconsistencias.push({ ...metrics, diaSemana, motivo });
+      } else if (metrics.status === 'sem-registro' && !diaSemana.isFimDeSemana) {
+        inconsistencias.push({ ...metrics, diaSemana, motivo: 'Dia útil sem nenhuma marcação de ponto' });
+      }
     }
 
     return { user, inconsistencias };
