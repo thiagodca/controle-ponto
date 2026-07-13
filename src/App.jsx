@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v4.2-remove-tela-registros';
+const APP_VERSION = 'v4.3-modal-unificado';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -172,7 +172,7 @@ const ControlePonto = () => {
   // Estado para o modal de resolução/ajuste de ponto (usado tanto na tela de
   // Inconsistências quanto na tela de Relatório, para qualquer dia)
   const [resolveModalOpen, setResolveModalOpen] = useState(false);
-  const [resolveModalTab, setResolveModalTab] = useState('horarios'); // 'horarios' | 'feriado'
+  const [resolveEhFeriado, setResolveEhFeriado] = useState(false);
   const [resolveUserId, setResolveUserId] = useState('');
   const [resolveDate, setResolveDate] = useState('');
   const [resolveEntrada, setResolveEntrada] = useState('');
@@ -754,9 +754,9 @@ const ControlePonto = () => {
     setResolveSaida(dia.saida ? dia.saida.substring(0, 5) : '');
     setResolveTemAtestado(!!dia.temAtestado);
     setResolveAtestadoHoras(dia.atestadoHoras != null ? String(dia.atestadoHoras) : '');
+    setResolveEhFeriado(!!dia.isHoliday);
     setResolveJustificativa('');
     setResolveError('');
-    setResolveModalTab('horarios');
     setResolveModalOpen(true);
   };
 
@@ -928,6 +928,16 @@ const ControlePonto = () => {
       setResolveError('Erro ao salvar: ' + error.message);
     } finally {
       setResolveSaving(false);
+    }
+  };
+
+  // Ponto único de salvamento: decide entre marcar feriado ou corrigir
+  // horários/atestado, dependendo do checkbox "É feriado".
+  const handleSaveAjuste = () => {
+    if (resolveEhFeriado) {
+      handleMarkHoliday();
+    } else {
+      handleSaveHorarios();
     }
   };
 
@@ -1761,28 +1771,24 @@ const ControlePonto = () => {
               </button>
             </div>
 
-            <div className="flex border-b border-gray-200">
-              <button
-                onClick={() => setResolveModalTab('horarios')}
-                className={`flex-1 py-3 text-sm font-semibold transition-colors ${
-                  resolveModalTab === 'horarios' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500'
-                }`}
-              >
-                Corrigir horários
-              </button>
-              <button
-                onClick={() => setResolveModalTab('feriado')}
-                className={`flex-1 py-3 text-sm font-semibold transition-colors ${
-                  resolveModalTab === 'feriado' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500'
-                }`}
-              >
-                Marcar como feriado
-              </button>
-            </div>
+            <div className="p-5 space-y-4">
+              <label className="flex items-center gap-2 bg-gray-50 rounded-lg p-3 border border-gray-200">
+                <input
+                  type="checkbox"
+                  checked={resolveEhFeriado}
+                  onChange={(e) => setResolveEhFeriado(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <PartyPopper className="w-4 h-4 text-amber-500" />
+                <span className="text-sm font-medium text-gray-700">Este dia é feriado</span>
+              </label>
 
-            <div className="p-5">
-              {resolveModalTab === 'horarios' ? (
-                <div className="space-y-4">
+              {resolveEhFeriado ? (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
+                  Marcar este dia como feriado remove qualquer lançamento deste funcionário na data e impede que ela volte a aparecer como inconsistência.
+                </div>
+              ) : (
+                <>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Entrada {!resolveTemAtestado || parseFloat(resolveAtestadoHoras || 0) < JORNADA_DIARIA_HORAS ? '*' : ''}</label>
@@ -1833,7 +1839,8 @@ const ControlePonto = () => {
                         onChange={(e) => setResolveTemAtestado(e.target.checked)}
                         className="w-4 h-4"
                       />
-                      <span className="text-sm font-medium text-gray-700">🩺 Este dia teve atestado médico</span>
+                      <Stethoscope className="w-4 h-4 text-rose-500" />
+                      <span className="text-sm font-medium text-gray-700">Este dia teve atestado médico</span>
                     </label>
                     {resolveTemAtestado && (
                       <div>
@@ -1854,82 +1861,45 @@ const ControlePonto = () => {
                       </div>
                     )}
                   </div>
+                </>
+              )}
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Justificativa *</label>
-                    <textarea
-                      value={resolveJustificativa}
-                      onChange={(e) => setResolveJustificativa(e.target.value)}
-                      placeholder="Explique o motivo deste ajuste"
-                      rows={2}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none resize-none"
-                    />
-                  </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Justificativa *</label>
+                <textarea
+                  value={resolveJustificativa}
+                  onChange={(e) => setResolveJustificativa(e.target.value)}
+                  placeholder={resolveEhFeriado ? 'Ex: Feriado municipal' : 'Explique o motivo deste ajuste'}
+                  rows={2}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none resize-none"
+                />
+              </div>
 
-                  {resolveError && (
-                    <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
-                      {resolveError}
-                    </div>
-                  )}
-
-                  <div className="flex gap-3">
-                    <button
-                      onClick={closeResolveModal}
-                      className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
-                    >
-                      Cancelar
-                    </button>
-                    <button
-                      onClick={handleSaveHorarios}
-                      disabled={resolveSaving}
-                      className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
-                    >
-                      {resolveSaving ? 'Salvando...' : 'Salvar correção'}
-                    </button>
-                  </div>
-                  <p className="text-xs text-gray-400 text-center">
-                    Isso substitui todos os lançamentos deste dia e marca como ajuste manual.
-                  </p>
+              {resolveError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
+                  {resolveError}
                 </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
-                    Marcar este dia como feriado remove qualquer lançamento deste funcionário na data e impede que ela volte a aparecer como inconsistência.
-                  </div>
+              )}
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Justificativa *</label>
-                    <textarea
-                      value={resolveJustificativa}
-                      onChange={(e) => setResolveJustificativa(e.target.value)}
-                      placeholder="Ex: Feriado municipal"
-                      rows={2}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none resize-none"
-                    />
-                  </div>
-
-                  {resolveError && (
-                    <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
-                      {resolveError}
-                    </div>
-                  )}
-
-                  <div className="flex gap-3">
-                    <button
-                      onClick={closeResolveModal}
-                      className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
-                    >
-                      Cancelar
-                    </button>
-                    <button
-                      onClick={handleMarkHoliday}
-                      disabled={resolveSaving}
-                      className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
-                    >
-                      {resolveSaving ? 'Salvando...' : 'Confirmar feriado'}
-                    </button>
-                  </div>
-                </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={closeResolveModal}
+                  className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleSaveAjuste}
+                  disabled={resolveSaving}
+                  className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
+                >
+                  {resolveSaving ? 'Salvando...' : resolveEhFeriado ? 'Confirmar feriado' : 'Salvar correção'}
+                </button>
+              </div>
+              {!resolveEhFeriado && (
+                <p className="text-xs text-gray-400 text-center">
+                  Isso substitui todos os lançamentos deste dia e marca como ajuste manual.
+                </p>
               )}
             </div>
           </div>
