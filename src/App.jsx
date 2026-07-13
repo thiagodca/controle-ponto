@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper } from 'lucide-react';
+import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree } from 'lucide-react';
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v4.4-tabela-usuarios-scroll';
+const APP_VERSION = 'v4.5-ferias';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -157,6 +157,7 @@ const ControlePonto = () => {
   const [timeRecords, setTimeRecords] = useState([]);
   const [holidays, setHolidays] = useState([]); // array de {date, description}
   const [medicalCertificates, setMedicalCertificates] = useState([]); // [{id, userId, date, hours, justification}]
+  const [vacations, setVacations] = useState([]); // [{id, userId, userName, startDate, endDate}]
   
   // Estado para relatório — mês e ano do relatório vêm pré-selecionados com o mês atual
   const nowParaDefaults = new Date();
@@ -215,6 +216,11 @@ const ControlePonto = () => {
       const atestadosDb = await supabaseRequest('atestados', 'GET', { query: '?select=*' });
       setMedicalCertificates((atestadosDb || []).map(a => ({
         id: a.id, userId: a.user_id, date: a.date, hours: parseFloat(a.hours), justification: a.justification
+      })));
+
+      const feriasDb = await supabaseRequest('ferias', 'GET', { query: '?select=*' });
+      setVacations((feriasDb || []).map(v => ({
+        id: v.id, userId: v.user_id, startDate: v.start_date, endDate: v.end_date
       })));
 
       setStorageAvailable(true);
@@ -485,6 +491,17 @@ const ControlePonto = () => {
     setClockModalErrorMsg('');
     setClockModalStatus('checking-permission');
 
+    if (currentUser) {
+      const hoje = new Date();
+      const hojeStr = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+      const feriasHoje = getVacationForDate(currentUser.id, hojeStr);
+      if (feriasHoje) {
+        setClockModalErrorMsg(`Você está de férias até ${formatDate(feriasHoje.endDate)}. Não é possível registrar ponto durante as férias.`);
+        setClockModalStatus('ferias');
+        return;
+      }
+    }
+
     const permissao = await checkGeoPermission();
     if (permissao === 'denied') {
       setClockModalStatus('permission-denied');
@@ -576,7 +593,7 @@ const ControlePonto = () => {
   // - Dia sem nenhuma marcação = não trabalhado; não entra no somatório.
   const JORNADA_DIARIA_HORAS = 8;
 
-  const getDayMetrics = (dateStr, allRecords, atestado = null, feriado = null) => {
+  const getDayMetrics = (dateStr, allRecords, atestado = null, feriado = null, ferias = null) => {
     const dayRecords = allRecords
       .filter(r => r.date === dateStr)
       .sort((a, b) => a.time.localeCompare(b.time));
@@ -656,6 +673,8 @@ const ControlePonto = () => {
       atestadoInsuficiente,
       isHoliday: !!feriado,
       holidayDescription: feriado ? feriado.description : null,
+      isVacation: !!ferias,
+      vacationRange: ferias ? { start: ferias.startDate, end: ferias.endDate } : null,
     };
   };
 
@@ -687,7 +706,12 @@ const ControlePonto = () => {
     const dias = [];
     for (let dia = 1; dia <= diasNoMes; dia++) {
       const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
-      dias.push(getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null, feriadoPorData[dateStr] || null));
+      dias.push(getDayMetrics(
+        dateStr, userRecords,
+        atestadoPorData[dateStr] || null,
+        feriadoPorData[dateStr] || null,
+        getVacationForDate(reportUser, dateStr)
+      ));
     }
 
     const totalHorasTrabalhadas = dias.reduce((acc, d) => acc + (d.horasTrabalhadas || 0), 0);
@@ -720,6 +744,7 @@ const ControlePonto = () => {
       const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
       if (dateStr >= hojeStr) continue; // ignora hoje e datas futuras
       if (holidays.some(h => h.date === dateStr)) continue; // dia marcado como feriado — resolvido
+      if (isDateInVacation(inconsistencyUser, dateStr)) continue; // dia de férias — não é inconsistência
 
       const metrics = getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null);
       const diaSemana = getDiaSemana(dateStr);
@@ -941,6 +966,116 @@ const ControlePonto = () => {
     }
   };
 
+  // ===== Férias =====
+  const [vacationUserId, setVacationUserId] = useState('');
+  const [vacationStart, setVacationStart] = useState('');
+  const [vacationEnd, setVacationEnd] = useState('');
+  const [vacationError, setVacationError] = useState('');
+  const [vacationSaving, setVacationSaving] = useState(false);
+  const [editingVacationId, setEditingVacationId] = useState(null);
+
+  const resetVacationForm = () => {
+    setVacationUserId('');
+    setVacationStart('');
+    setVacationEnd('');
+    setVacationError('');
+    setEditingVacationId(null);
+  };
+
+  const handleEditVacationClick = (vacation) => {
+    setEditingVacationId(vacation.id);
+    setVacationUserId(vacation.userId);
+    setVacationStart(vacation.startDate);
+    setVacationEnd(vacation.endDate);
+    setVacationError('');
+  };
+
+  // Verifica se uma data (string 'YYYY-MM-DD') está dentro de algum período de
+  // férias já registrado para o usuário informado.
+  const isDateInVacation = (userId, dateStr) => {
+    return vacations.some(v => v.userId === userId && dateStr >= v.startDate && dateStr <= v.endDate);
+  };
+
+  // Retorna o período de férias (se houver) que cobre a data informada.
+  const getVacationForDate = (userId, dateStr) => {
+    return vacations.find(v => v.userId === userId && dateStr >= v.startDate && dateStr <= v.endDate) || null;
+  };
+
+  const handleSaveVacation = async () => {
+    setVacationError('');
+
+    if (!vacationUserId || !vacationStart || !vacationEnd) {
+      setVacationError('Selecione o funcionário e as duas datas.');
+      return;
+    }
+    if (vacationEnd < vacationStart) {
+      setVacationError('A data de fim não pode ser antes da data de início.');
+      return;
+    }
+
+    const qtdDias = Math.round((new Date(vacationEnd) - new Date(vacationStart)) / 86400000) + 1;
+
+    if (qtdDias > 30) {
+      const confirmar = window.confirm(
+        `Este período tem ${qtdDias} dias — mais que os 30 dias padrão de férias. Deseja confirmar mesmo assim?`
+      );
+      if (!confirmar) return;
+    }
+
+    // Verifica se há ponto registrado em algum dia do período (exceto o próprio
+    // registro sendo editado, que pode manter seus próprios dias)
+    const temPontoNoPeriodo = timeRecords.some(r =>
+      r.userId === vacationUserId && r.date >= vacationStart && r.date <= vacationEnd
+    );
+    if (temPontoNoPeriodo) {
+      setVacationError('Já existe ponto registrado em algum dia deste período. Ajuste ou remova esses registros antes de lançar as férias.');
+      return;
+    }
+
+    setVacationSaving(true);
+    try {
+      const usuarioAlvo = users.find(u => u.id === vacationUserId);
+
+      if (editingVacationId) {
+        await supabaseRequest('ferias', 'PATCH', {
+          query: `?id=eq.${editingVacationId}`,
+          body: { user_id: vacationUserId, start_date: vacationStart, end_date: vacationEnd }
+        });
+        setVacations(vacations.map(v => v.id === editingVacationId
+          ? { ...v, userId: vacationUserId, userName: usuarioAlvo.name, startDate: vacationStart, endDate: vacationEnd }
+          : v
+        ));
+      } else {
+        const inserido = await supabaseRequest('ferias', 'POST', {
+          body: { user_id: vacationUserId, start_date: vacationStart, end_date: vacationEnd }
+        });
+        const novo = inserido[0];
+        setVacations([...vacations, {
+          id: novo.id, userId: novo.user_id, userName: usuarioAlvo.name, startDate: novo.start_date, endDate: novo.end_date
+        }]);
+      }
+      resetVacationForm();
+    } catch (error) {
+      console.error('Erro ao salvar férias:', error);
+      setVacationError('Erro ao salvar: ' + error.message);
+    } finally {
+      setVacationSaving(false);
+    }
+  };
+
+  const handleDeleteVacation = async (vacation) => {
+    if (!window.confirm(`Excluir o período de férias de ${vacation.userName} (${formatDate(vacation.startDate)} a ${formatDate(vacation.endDate)})?`)) {
+      return;
+    }
+    try {
+      await supabaseRequest('ferias', 'DELETE', { query: `?id=eq.${vacation.id}` });
+      setVacations(vacations.filter(v => v.id !== vacation.id));
+    } catch (error) {
+      console.error('Erro ao excluir férias:', error);
+      alert('Não foi possível excluir: ' + error.message);
+    }
+  };
+
   const formatDate = (dateStr) => {
     const [year, month, day] = dateStr.split('-');
     return `${day}/${month}/${year}`;
@@ -954,6 +1089,7 @@ const ControlePonto = () => {
     const hojeStr = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
     if (dia.date >= hojeStr) return false; // hoje e datas futuras não contam
     if (dia.isHoliday) return false;
+    if (dia.isVacation) return false;
     if (dia.status === 'incompleto') return true;
     if (dia.atestadoInsuficiente) return true;
     if (dia.status === 'sem-registro' && !diaSemana.isFimDeSemana) return true;
@@ -1203,6 +1339,18 @@ const ControlePonto = () => {
                 >
                   <AlertTriangle className="inline w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
                   Inconsistências
+                </button>
+
+                <button
+                  onClick={() => setActiveView('vacations')}
+                  className={`px-3 sm:px-6 py-3 sm:py-4 text-sm sm:text-base font-medium transition-colors border-b-2 ${
+                    activeView === 'vacations'
+                      ? 'border-indigo-600 text-indigo-600'
+                      : 'border-transparent text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <Palmtree className="inline w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
+                  Férias
                 </button>
               </>
             )}
@@ -1586,6 +1734,11 @@ const ControlePonto = () => {
                                   <PartyPopper className="w-3.5 h-3.5 inline ml-1.5 text-amber-500 align-text-top" />
                                 </span>
                               )}
+                              {dia.isVacation && (
+                                <span title={`Férias: ${formatDate(dia.vacationRange.start)} a ${formatDate(dia.vacationRange.end)}`}>
+                                  <Palmtree className="w-3.5 h-3.5 inline ml-1.5 text-teal-500 align-text-top" />
+                                </span>
+                              )}
                               {isDiaInconsistente(dia, diaSemana) && (
                                 <span title="Inconsistência">
                                   <AlertTriangle className="w-3.5 h-3.5 inline ml-1.5 text-red-500 align-text-top" />
@@ -1756,6 +1909,129 @@ const ControlePonto = () => {
             })()}
           </div>
         )}
+
+        {/* Tela de Férias */}
+        {activeView === 'vacations' && currentUser?.profile === 'admin' && (
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900 mb-6">Férias</h2>
+
+            <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+              <h3 className="text-lg font-semibold text-gray-800 mb-4">
+                {editingVacationId ? 'Editar período de férias' : 'Registrar novas férias'}
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Funcionário</label>
+                  <select
+                    value={vacationUserId}
+                    onChange={(e) => setVacationUserId(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                  >
+                    <option value="">Selecione...</option>
+                    {users.filter(u => u.profile === 'employee').map(user => (
+                      <option key={user.id} value={user.id}>{user.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Data de início</label>
+                  <input
+                    type="date"
+                    value={vacationStart}
+                    onChange={(e) => setVacationStart(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Data de fim</label>
+                  <input
+                    type="date"
+                    value={vacationEnd}
+                    onChange={(e) => setVacationEnd(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {vacationError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3 mb-4">
+                  {vacationError}
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                {editingVacationId && (
+                  <button
+                    onClick={resetVacationForm}
+                    className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors font-medium"
+                  >
+                    Cancelar
+                  </button>
+                )}
+                <button
+                  onClick={handleSaveVacation}
+                  disabled={vacationSaving}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium disabled:opacity-50"
+                >
+                  {vacationSaving ? 'Salvando...' : editingVacationId ? 'Salvar alterações' : 'Registrar férias'}
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-lg overflow-x-auto">
+              <table className="w-full min-w-[520px]">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Funcionário</th>
+                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Início</th>
+                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Fim</th>
+                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Dias</th>
+                    <th className="px-6 py-4 text-right text-sm font-semibold text-gray-700">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {vacations
+                    .slice()
+                    .sort((a, b) => b.startDate.localeCompare(a.startDate))
+                    .map(vacation => {
+                      const qtdDias = Math.round((new Date(vacation.endDate) - new Date(vacation.startDate)) / 86400000) + 1;
+                      return (
+                        <tr key={vacation.id} className="hover:bg-gray-50 transition-colors">
+                          <td className="px-6 py-4 font-medium text-gray-900">{vacation.userName}</td>
+                          <td className="px-6 py-4 text-gray-600">{formatDate(vacation.startDate)}</td>
+                          <td className="px-6 py-4 text-gray-600">{formatDate(vacation.endDate)}</td>
+                          <td className="px-6 py-4 text-gray-600">{qtdDias}</td>
+                          <td className="px-6 py-4">
+                            <div className="flex gap-2 justify-end">
+                              <button
+                                onClick={() => handleEditVacationClick(vacation)}
+                                className="p-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors"
+                                title="Editar"
+                              >
+                                <Edit2 className="w-5 h-5" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteVacation(vacation)}
+                                className="p-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors"
+                                title="Excluir"
+                              >
+                                <Trash2 className="w-5 h-5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+              {vacations.length === 0 && (
+                <div className="text-center py-12 text-gray-500">
+                  Nenhum período de férias registrado
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </main>
 
       {/* Modal de ajuste/resolução de ponto */}
@@ -1921,6 +2197,20 @@ const ControlePonto = () => {
             </div>
 
             <div className="p-5">
+              {clockModalStatus === 'ferias' && (
+                <div className="py-6 text-center">
+                  <Palmtree className="w-14 h-14 text-teal-500 mx-auto mb-4" />
+                  <p className="font-semibold text-gray-800 mb-1">Você está de férias</p>
+                  <p className="text-gray-500 text-sm mb-4">{clockModalErrorMsg}</p>
+                  <button
+                    onClick={handleCloseClockModal}
+                    className="w-full bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                  >
+                    Entendi
+                  </button>
+                </div>
+              )}
+
               {(clockModalStatus === 'checking-permission' || clockModalStatus === 'loading-location') && (
                 <div className="py-12 text-center">
                   <div className="inline-block w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
