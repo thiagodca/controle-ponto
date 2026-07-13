@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v4.3-modal-unificado';
+const APP_VERSION = 'v4.4-tabela-usuarios-scroll';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -1368,8 +1368,8 @@ const ControlePonto = () => {
               </div>
             )}
 
-            <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-              <table className="w-full">
+            <div className="bg-white rounded-xl shadow-lg overflow-x-auto">
+              <table className="w-full min-w-[560px]">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
                     <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Nome</th>
