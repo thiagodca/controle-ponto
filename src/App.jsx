@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v4.8-fix-ferias-username';
+const APP_VERSION = 'v4.9-trava-funcionario-ferias';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -2081,16 +2081,25 @@ const ControlePonto = () => {
                   <div className="p-5 space-y-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">Funcionário</label>
-                      <select
-                        value={vacationUserId}
-                        onChange={(e) => setVacationUserId(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                      >
-                        <option value="">Selecione...</option>
-                        {users.filter(u => u.profile === 'employee').map(user => (
-                          <option key={user.id} value={user.id}>{user.name}</option>
-                        ))}
-                      </select>
+                      {editingVacationId ? (
+                        <div className="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-600">
+                          {users.find(u => u.id === vacationUserId)?.name || '—'}
+                          <span className="block text-xs text-gray-400 mt-0.5">
+                            Para trocar o funcionário, exclua este período e registre um novo.
+                          </span>
+                        </div>
+                      ) : (
+                        <select
+                          value={vacationUserId}
+                          onChange={(e) => setVacationUserId(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                        >
+                          <option value="">Selecione...</option>
+                          {users.filter(u => u.profile === 'employee').map(user => (
+                            <option key={user.id} value={user.id}>{user.name}</option>
+                          ))}
+                        </select>
+                      )}
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
