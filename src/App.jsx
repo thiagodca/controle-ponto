@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v4.9-trava-funcionario-ferias';
+const APP_VERSION = 'v4.10-fix-pills-status-grid';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -1965,7 +1965,7 @@ const ControlePonto = () => {
               />
             </div>
 
-            <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
+            <div className="grid grid-cols-2 gap-2 mb-4">
               {[
                 { value: 'todas', label: 'Todas' },
                 { value: 'andamento', label: '🟢 Em andamento' },
@@ -1975,7 +1975,7 @@ const ControlePonto = () => {
                 <button
                   key={opt.value}
                   onClick={() => setVacationStatusFilter(opt.value)}
-                  className={`px-3 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${
+                  className={`px-3 py-2 rounded-lg text-sm font-medium text-center transition-colors ${
                     vacationStatusFilter === opt.value
                       ? 'bg-indigo-600 text-white'
                       : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
