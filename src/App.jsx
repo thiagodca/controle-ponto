@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v4.7-ux-ferias-cards';
+const APP_VERSION = 'v4.8-fix-ferias-username';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -207,7 +207,8 @@ const ControlePonto = () => {
     setLoadError('');
     try {
       const usuarios = await supabaseRequest('usuarios', 'GET', { query: '?select=*&order=created_at.asc' });
-      setUsers((usuarios || []).map(dbUserToApp));
+      const usuariosMapeados = (usuarios || []).map(dbUserToApp);
+      setUsers(usuariosMapeados);
 
       const registros = await supabaseRequest('registros_ponto', 'GET', { query: '?select=*&order=datetime.asc' });
       setTimeRecords((registros || []).map(dbRecordToApp));
@@ -222,7 +223,11 @@ const ControlePonto = () => {
 
       const feriasDb = await supabaseRequest('ferias', 'GET', { query: '?select=*' });
       setVacations((feriasDb || []).map(v => ({
-        id: v.id, userId: v.user_id, startDate: v.start_date, endDate: v.end_date
+        id: v.id,
+        userId: v.user_id,
+        userName: usuariosMapeados.find(u => u.id === v.user_id)?.name || '(usuário removido)',
+        startDate: v.start_date,
+        endDate: v.end_date,
       })));
 
       setStorageAvailable(true);
@@ -1983,7 +1988,7 @@ const ControlePonto = () => {
 
             <div className="space-y-2">
               {vacations
-                .filter(v => v.userName.toLowerCase().includes(vacationSearchQuery.toLowerCase()))
+                .filter(v => (v.userName || '').toLowerCase().includes(vacationSearchQuery.toLowerCase()))
                 .filter(v => vacationStatusFilter === 'todas' || getVacationStatus(v) === vacationStatusFilter)
                 .sort((a, b) => b.startDate.localeCompare(a.startDate))
                 .map(vacation => {
@@ -1998,7 +2003,7 @@ const ControlePonto = () => {
                   return (
                     <div key={vacation.id} className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex items-center gap-3 relative">
                       <div className="w-11 h-11 rounded-full bg-teal-500 flex items-center justify-center text-white font-semibold flex-shrink-0">
-                        {vacation.userName.trim().charAt(0).toUpperCase()}
+                        {(vacation.userName || '?').trim().charAt(0).toUpperCase()}
                       </div>
 
                       <div className="min-w-0 flex-1">
@@ -2051,7 +2056,7 @@ const ControlePonto = () => {
                 })}
 
               {vacations
-                .filter(v => v.userName.toLowerCase().includes(vacationSearchQuery.toLowerCase()))
+                .filter(v => (v.userName || '').toLowerCase().includes(vacationSearchQuery.toLowerCase()))
                 .filter(v => vacationStatusFilter === 'todas' || getVacationStatus(v) === vacationStatusFilter)
                 .length === 0 && (
                 <div className="bg-white rounded-xl shadow-sm p-8 text-center text-gray-500">
