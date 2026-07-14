@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v4.6-ux-usuarios-cards';
+const APP_VERSION = 'v4.7-ux-ferias-cards';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -975,6 +975,10 @@ const ControlePonto = () => {
   const [vacationError, setVacationError] = useState('');
   const [vacationSaving, setVacationSaving] = useState(false);
   const [editingVacationId, setEditingVacationId] = useState(null);
+  const [showVacationForm, setShowVacationForm] = useState(false);
+  const [vacationSearchQuery, setVacationSearchQuery] = useState('');
+  const [vacationStatusFilter, setVacationStatusFilter] = useState('todas'); // 'todas' | 'andamento' | 'agendada' | 'concluida'
+  const [vacationMenuOpenId, setVacationMenuOpenId] = useState(null);
 
   const resetVacationForm = () => {
     setVacationUserId('');
@@ -982,6 +986,7 @@ const ControlePonto = () => {
     setVacationEnd('');
     setVacationError('');
     setEditingVacationId(null);
+    setShowVacationForm(false);
   };
 
   const handleEditVacationClick = (vacation) => {
@@ -990,6 +995,16 @@ const ControlePonto = () => {
     setVacationStart(vacation.startDate);
     setVacationEnd(vacation.endDate);
     setVacationError('');
+    setShowVacationForm(true);
+  };
+
+  // Calcula o status de um período de férias em relação à data de hoje
+  const getVacationStatus = (vacation) => {
+    const hoje = new Date();
+    const hojeStr = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+    if (hojeStr < vacation.startDate) return 'agendada';
+    if (hojeStr > vacation.endDate) return 'concluida';
+    return 'andamento';
   };
 
   // Verifica se uma data (string 'YYYY-MM-DD') está dentro de algum período de
@@ -1923,125 +1938,204 @@ const ControlePonto = () => {
         {/* Tela de Férias */}
         {activeView === 'vacations' && currentUser?.profile === 'admin' && (
           <div>
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Férias</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold text-gray-900">Férias</h2>
+              <button
+                onClick={() => setShowVacationForm(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium"
+              >
+                <Plus className="w-5 h-5" />
+                Novo
+              </button>
+            </div>
 
-            <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
-              <h3 className="text-lg font-semibold text-gray-800 mb-4">
-                {editingVacationId ? 'Editar período de férias' : 'Registrar novas férias'}
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Funcionário</label>
-                  <select
-                    value={vacationUserId}
-                    onChange={(e) => setVacationUserId(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                  >
-                    <option value="">Selecione...</option>
-                    {users.filter(u => u.profile === 'employee').map(user => (
-                      <option key={user.id} value={user.id}>{user.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Data de início</label>
-                  <input
-                    type="date"
-                    value={vacationStart}
-                    onChange={(e) => setVacationStart(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Data de fim</label>
-                  <input
-                    type="date"
-                    value={vacationEnd}
-                    onChange={(e) => setVacationEnd(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                  />
-                </div>
-              </div>
+            <div className="relative mb-3">
+              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={vacationSearchQuery}
+                onChange={(e) => setVacationSearchQuery(e.target.value)}
+                placeholder="Buscar por funcionário..."
+                className="w-full pl-9 pr-3 py-2.5 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
+              />
+            </div>
 
-              {vacationError && (
-                <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3 mb-4">
-                  {vacationError}
-                </div>
-              )}
-
-              <div className="flex gap-3">
-                {editingVacationId && (
-                  <button
-                    onClick={resetVacationForm}
-                    className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors font-medium"
-                  >
-                    Cancelar
-                  </button>
-                )}
+            <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
+              {[
+                { value: 'todas', label: 'Todas' },
+                { value: 'andamento', label: '🟢 Em andamento' },
+                { value: 'agendada', label: '🔵 Agendadas' },
+                { value: 'concluida', label: '⚪ Concluídas' },
+              ].map(opt => (
                 <button
-                  onClick={handleSaveVacation}
-                  disabled={vacationSaving}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium disabled:opacity-50"
+                  key={opt.value}
+                  onClick={() => setVacationStatusFilter(opt.value)}
+                  className={`px-3 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${
+                    vacationStatusFilter === opt.value
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
+                  }`}
                 >
-                  {vacationSaving ? 'Salvando...' : editingVacationId ? 'Salvar alterações' : 'Registrar férias'}
+                  {opt.label}
                 </button>
-              </div>
+              ))}
             </div>
 
-            <div className="bg-white rounded-xl shadow-lg overflow-x-auto">
-              <table className="w-full min-w-[520px]">
-                <thead className="bg-gray-50 border-b border-gray-200">
-                  <tr>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Funcionário</th>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Início</th>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Fim</th>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Dias</th>
-                    <th className="px-6 py-4 text-right text-sm font-semibold text-gray-700">Ações</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {vacations
-                    .slice()
-                    .sort((a, b) => b.startDate.localeCompare(a.startDate))
-                    .map(vacation => {
-                      const qtdDias = Math.round((new Date(vacation.endDate) - new Date(vacation.startDate)) / 86400000) + 1;
-                      return (
-                        <tr key={vacation.id} className="hover:bg-gray-50 transition-colors">
-                          <td className="px-6 py-4 font-medium text-gray-900">{vacation.userName}</td>
-                          <td className="px-6 py-4 text-gray-600">{formatDate(vacation.startDate)}</td>
-                          <td className="px-6 py-4 text-gray-600">{formatDate(vacation.endDate)}</td>
-                          <td className="px-6 py-4 text-gray-600">{qtdDias}</td>
-                          <td className="px-6 py-4">
-                            <div className="flex gap-2 justify-end">
-                              <button
-                                onClick={() => handleEditVacationClick(vacation)}
-                                className="p-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors"
-                                title="Editar"
-                              >
-                                <Edit2 className="w-5 h-5" />
-                              </button>
-                              <button
-                                onClick={() => handleDeleteVacation(vacation)}
-                                className="p-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors"
-                                title="Excluir"
-                              >
-                                <Trash2 className="w-5 h-5" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                </tbody>
-              </table>
-              {vacations.length === 0 && (
-                <div className="text-center py-12 text-gray-500">
-                  Nenhum período de férias registrado
+            <div className="space-y-2">
+              {vacations
+                .filter(v => v.userName.toLowerCase().includes(vacationSearchQuery.toLowerCase()))
+                .filter(v => vacationStatusFilter === 'todas' || getVacationStatus(v) === vacationStatusFilter)
+                .sort((a, b) => b.startDate.localeCompare(a.startDate))
+                .map(vacation => {
+                  const qtdDias = Math.round((new Date(vacation.endDate) - new Date(vacation.startDate)) / 86400000) + 1;
+                  const status = getVacationStatus(vacation);
+                  const statusInfo = {
+                    andamento: { label: 'Em andamento', className: 'bg-green-100 text-green-700' },
+                    agendada: { label: 'Agendada', className: 'bg-blue-100 text-blue-700' },
+                    concluida: { label: 'Concluída', className: 'bg-gray-100 text-gray-600' },
+                  }[status];
+
+                  return (
+                    <div key={vacation.id} className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex items-center gap-3 relative">
+                      <div className="w-11 h-11 rounded-full bg-teal-500 flex items-center justify-center text-white font-semibold flex-shrink-0">
+                        {vacation.userName.trim().charAt(0).toUpperCase()}
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-gray-900 truncate">{vacation.userName}</p>
+                        <p className="text-sm text-gray-500">
+                          {formatDate(vacation.startDate)} — {formatDate(vacation.endDate)}
+                          <span className="text-gray-400"> · {qtdDias} {qtdDias === 1 ? 'dia' : 'dias'}</span>
+                        </p>
+                        <span className={`inline-flex mt-1 px-2 py-0.5 rounded-full text-xs font-semibold ${statusInfo.className}`}>
+                          {statusInfo.label}
+                        </span>
+                      </div>
+
+                      <button
+                        onClick={() => setVacationMenuOpenId(vacationMenuOpenId === vacation.id ? null : vacation.id)}
+                        className="p-2.5 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
+                        title="Mais opções"
+                      >
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                          <circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none" />
+                          <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+                          <circle cx="12" cy="19" r="1.5" fill="currentColor" stroke="none" />
+                        </svg>
+                      </button>
+
+                      {vacationMenuOpenId === vacation.id && (
+                        <>
+                          <div className="fixed inset-0 z-30" onClick={() => setVacationMenuOpenId(null)}></div>
+                          <div className="absolute right-4 top-14 bg-white rounded-xl shadow-xl border border-gray-100 py-1.5 w-44 z-40">
+                            <button
+                              onClick={() => { handleEditVacationClick(vacation); setVacationMenuOpenId(null); }}
+                              className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                            >
+                              <Edit2 className="w-4 h-4 text-blue-600" />
+                              Editar
+                            </button>
+                            <div className="border-t border-gray-100 my-1"></div>
+                            <button
+                              onClick={() => { setVacationMenuOpenId(null); handleDeleteVacation(vacation); }}
+                              className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                              Excluir
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+
+              {vacations
+                .filter(v => v.userName.toLowerCase().includes(vacationSearchQuery.toLowerCase()))
+                .filter(v => vacationStatusFilter === 'todas' || getVacationStatus(v) === vacationStatusFilter)
+                .length === 0 && (
+                <div className="bg-white rounded-xl shadow-sm p-8 text-center text-gray-500">
+                  {vacations.length === 0 ? 'Nenhum período de férias registrado' : 'Nenhum resultado para esse filtro'}
                 </div>
               )}
             </div>
+
+            {/* Modal de cadastro/edição de férias */}
+            {showVacationForm && (
+              <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+                <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-md max-h-[90vh] overflow-y-auto">
+                  <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+                    <h3 className="text-lg font-bold text-gray-900">
+                      {editingVacationId ? 'Editar período de férias' : 'Registrar novas férias'}
+                    </h3>
+                    <button onClick={resetVacationForm} className="p-1 text-gray-400 hover:text-gray-600">
+                      <X className="w-6 h-6" />
+                    </button>
+                  </div>
+
+                  <div className="p-5 space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Funcionário</label>
+                      <select
+                        value={vacationUserId}
+                        onChange={(e) => setVacationUserId(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                      >
+                        <option value="">Selecione...</option>
+                        {users.filter(u => u.profile === 'employee').map(user => (
+                          <option key={user.id} value={user.id}>{user.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Início</label>
+                        <input
+                          type="date"
+                          value={vacationStart}
+                          onChange={(e) => setVacationStart(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Fim</label>
+                        <input
+                          type="date"
+                          value={vacationEnd}
+                          onChange={(e) => setVacationEnd(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    {vacationError && (
+                      <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
+                        {vacationError}
+                      </div>
+                    )}
+
+                    <div className="flex gap-3 pt-2">
+                      <button
+                        onClick={resetVacationForm}
+                        className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        onClick={handleSaveVacation}
+                        disabled={vacationSaving}
+                        className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
+                      >
+                        {vacationSaving ? 'Salvando...' : editingVacationId ? 'Salvar alterações' : 'Registrar férias'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
+
       </main>
 
       {/* Modal de ajuste/resolução de ponto */}
