@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v4.5-ferias';
+const APP_VERSION = 'v4.6-ux-usuarios-cards';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -152,6 +152,8 @@ const ControlePonto = () => {
   const [editingUser, setEditingUser] = useState(null);
   const [newUser, setNewUser] = useState({ name: '', email: '', profile: 'employee' });
   const [showUserForm, setShowUserForm] = useState(false);
+  const [userSearchQuery, setUserSearchQuery] = useState('');
+  const [userMenuOpenId, setUserMenuOpenId] = useState(null);
   
   // Estado para registros de ponto
   const [timeRecords, setTimeRecords] = useState([]);
@@ -1433,17 +1435,17 @@ const ControlePonto = () => {
         {activeView === 'users' && currentUser?.profile === 'admin' && (
           <div>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-bold text-gray-900">Gerenciamento de Usuários</h2>
+              <h2 className="text-2xl font-bold text-gray-900">Usuários</h2>
               <button
-                onClick={() => setShowUserForm(!showUserForm)}
+                onClick={() => setShowUserForm(true)}
                 className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium"
               >
                 <Plus className="w-5 h-5" />
-                Novo Usuário
+                Novo
               </button>
             </div>
 
-            <div className="flex flex-wrap gap-2 mb-6">
+            <div className="flex flex-wrap gap-2 mb-4">
               <button
                 onClick={handleExportBackup}
                 className="flex items-center gap-2 px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm font-medium"
@@ -1458,169 +1460,177 @@ const ControlePonto = () => {
               </label>
             </div>
 
-            {showUserForm && (
-              <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
-                <h3 className="text-xl font-semibold text-gray-800 mb-4">Cadastrar Novo Usuário</h3>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Nome</label>
-                    <input
-                      type="text"
-                      value={newUser.name}
-                      onChange={(e) => setNewUser({ ...newUser, name: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                      placeholder="Nome completo"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">E-mail</label>
-                    <input
-                      type="email"
-                      value={newUser.email}
-                      onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                      placeholder="email@exemplo.com"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Perfil</label>
-                    <select
-                      value={newUser.profile}
-                      onChange={(e) => setNewUser({ ...newUser, profile: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+            <div className="relative mb-4">
+              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={userSearchQuery}
+                onChange={(e) => setUserSearchQuery(e.target.value)}
+                placeholder="Buscar por nome ou e-mail..."
+                className="w-full pl-9 pr-3 py-2.5 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
+              />
+            </div>
+
+            <div className="space-y-2">
+              {users
+                .filter(u =>
+                  u.name.toLowerCase().includes(userSearchQuery.toLowerCase()) ||
+                  u.email.toLowerCase().includes(userSearchQuery.toLowerCase())
+                )
+                .map(user => (
+                  <div key={user.id} className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex items-center gap-3 relative">
+                    <div className={`w-11 h-11 rounded-full flex items-center justify-center text-white font-semibold flex-shrink-0 ${
+                      user.profile === 'admin' ? 'bg-purple-500' : 'bg-blue-500'
+                    }`}>
+                      {user.name.trim().charAt(0).toUpperCase()}
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <p className="font-semibold text-gray-900 truncate">{user.name}</p>
+                      <p className="text-sm text-gray-500 truncate">{user.email}</p>
+                      <span className={`inline-flex mt-1 px-2 py-0.5 rounded-full text-xs font-semibold ${
+                        user.profile === 'admin'
+                          ? 'bg-purple-100 text-purple-700'
+                          : 'bg-blue-100 text-blue-700'
+                      }`}>
+                        {user.profile === 'admin' ? 'Administrador' : 'Funcionário'}
+                      </span>
+                    </div>
+
+                    <button
+                      onClick={() => setUserMenuOpenId(userMenuOpenId === user.id ? null : user.id)}
+                      className="p-2.5 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
+                      title="Mais opções"
                     >
-                      <option value="employee">Funcionário</option>
-                      <option value="admin">Administrador</option>
-                    </select>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                        <circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none" />
+                        <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+                        <circle cx="12" cy="19" r="1.5" fill="currentColor" stroke="none" />
+                      </svg>
+                    </button>
+
+                    {userMenuOpenId === user.id && (
+                      <>
+                        <div className="fixed inset-0 z-30" onClick={() => setUserMenuOpenId(null)}></div>
+                        <div className="absolute right-4 top-14 bg-white rounded-xl shadow-xl border border-gray-100 py-1.5 w-48 z-40">
+                          <button
+                            onClick={() => { handleEditUser(user); setUserMenuOpenId(null); }}
+                            className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                          >
+                            <Edit2 className="w-4 h-4 text-blue-600" />
+                            Editar dados
+                          </button>
+                          <button
+                            onClick={() => { handleResetPassword(user); setUserMenuOpenId(null); }}
+                            className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                          >
+                            <Wrench className="w-4 h-4 text-amber-600" />
+                            Resetar senha
+                          </button>
+                          <div className="border-t border-gray-100 my-1"></div>
+                          <button
+                            onClick={() => { setUserMenuOpenId(null); handleDeleteUser(user.id); }}
+                            disabled={user.email === 'admin@admin.com'}
+                            className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                            Excluir
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
+                ))}
+
+              {users.filter(u =>
+                u.name.toLowerCase().includes(userSearchQuery.toLowerCase()) ||
+                u.email.toLowerCase().includes(userSearchQuery.toLowerCase())
+              ).length === 0 && (
+                <div className="bg-white rounded-xl shadow-sm p-8 text-center text-gray-500">
+                  Nenhum usuário encontrado
                 </div>
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => {
-                      setShowUserForm(false);
-                      setNewUser({ name: '', email: '', profile: 'employee' });
-                    }}
-                    className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium"
-                  >
-                    <X className="inline w-5 h-5 mr-1" />
-                    Cancelar
-                  </button>
-                  <button
-                    onClick={handleAddUser}
-                    className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium"
-                  >
-                    <Save className="inline w-5 h-5 mr-1" />
-                    Salvar
-                  </button>
+              )}
+            </div>
+
+            {/* Modal de cadastro/edição de usuário */}
+            {(showUserForm || editingUser) && (
+              <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+                <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-md max-h-[90vh] overflow-y-auto">
+                  <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+                    <h3 className="text-lg font-bold text-gray-900">
+                      {editingUser ? 'Editar Usuário' : 'Cadastrar Novo Usuário'}
+                    </h3>
+                    <button
+                      onClick={() => { setShowUserForm(false); setEditingUser(null); setNewUser({ name: '', email: '', profile: 'employee' }); }}
+                      className="p-1 text-gray-400 hover:text-gray-600"
+                    >
+                      <X className="w-6 h-6" />
+                    </button>
+                  </div>
+
+                  <div className="p-5 space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Nome</label>
+                      <input
+                        type="text"
+                        value={editingUser ? editingUser.name : newUser.name}
+                        onChange={(e) => editingUser
+                          ? setEditingUser({ ...editingUser, name: e.target.value })
+                          : setNewUser({ ...newUser, name: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                        placeholder="Nome completo"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">E-mail</label>
+                      <input
+                        type="email"
+                        value={editingUser ? editingUser.email : newUser.email}
+                        onChange={(e) => editingUser
+                          ? setEditingUser({ ...editingUser, email: e.target.value })
+                          : setNewUser({ ...newUser, email: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                        placeholder="email@exemplo.com"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Perfil</label>
+                      <select
+                        value={editingUser ? editingUser.profile : newUser.profile}
+                        onChange={(e) => editingUser
+                          ? setEditingUser({ ...editingUser, profile: e.target.value })
+                          : setNewUser({ ...newUser, profile: e.target.value })}
+                        disabled={editingUser && editingUser.email === 'admin@admin.com'}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                      >
+                        <option value="employee">Funcionário</option>
+                        <option value="admin">Administrador</option>
+                      </select>
+                    </div>
+
+                    <div className="flex gap-3 pt-2">
+                      <button
+                        onClick={() => { setShowUserForm(false); setEditingUser(null); setNewUser({ name: '', email: '', profile: 'employee' }); }}
+                        className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        onClick={editingUser ? handleSaveEdit : handleAddUser}
+                        className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all"
+                      >
+                        {editingUser ? 'Salvar alterações' : 'Cadastrar'}
+                      </button>
+                    </div>
+                    {!editingUser && (
+                      <p className="text-xs text-gray-400 text-center">
+                        A pessoa entra pela primeira vez com a senha padrão 123456 e cria a senha dela.
+                      </p>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
-
-            <div className="bg-white rounded-xl shadow-lg overflow-x-auto">
-              <table className="w-full min-w-[560px]">
-                <thead className="bg-gray-50 border-b border-gray-200">
-                  <tr>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Nome</th>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">E-mail</th>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-700">Perfil</th>
-                    <th className="px-6 py-4 text-right text-sm font-semibold text-gray-700">Ações</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {users.map(user => (
-                    <tr key={user.id} className="hover:bg-gray-50 transition-colors">
-                      {editingUser && editingUser.id === user.id ? (
-                        <>
-                          <td className="px-6 py-4">
-                            <input
-                              type="text"
-                              value={editingUser.name}
-                              onChange={(e) => setEditingUser({ ...editingUser, name: e.target.value })}
-                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                            />
-                          </td>
-                          <td className="px-6 py-4">
-                            <input
-                              type="email"
-                              value={editingUser.email}
-                              onChange={(e) => setEditingUser({ ...editingUser, email: e.target.value })}
-                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                            />
-                          </td>
-                          <td className="px-6 py-4">
-                            <select
-                              value={editingUser.profile}
-                              onChange={(e) => setEditingUser({ ...editingUser, profile: e.target.value })}
-                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                              disabled={user.email === 'admin@admin.com'}
-                            >
-                              <option value="employee">Funcionário</option>
-                              <option value="admin">Administrador</option>
-                            </select>
-                          </td>
-                          <td className="px-6 py-4">
-                            <div className="flex gap-2 justify-end">
-                              <button
-                                onClick={handleSaveEdit}
-                                className="p-2 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition-colors"
-                              >
-                                <Save className="w-5 h-5" />
-                              </button>
-                              <button
-                                onClick={() => setEditingUser(null)}
-                                className="p-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-                              >
-                                <X className="w-5 h-5" />
-                              </button>
-                            </div>
-                          </td>
-                        </>
-                      ) : (
-                        <>
-                          <td className="px-6 py-4 font-medium text-gray-900">{user.name}</td>
-                          <td className="px-6 py-4 text-gray-600">{user.email}</td>
-                          <td className="px-6 py-4">
-                            <span className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
-                              user.profile === 'admin' 
-                                ? 'bg-purple-100 text-purple-700' 
-                                : 'bg-blue-100 text-blue-700'
-                            }`}>
-                              {user.profile === 'admin' ? 'Administrador' : 'Funcionário'}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4">
-                            <div className="flex gap-2 justify-end">
-                              <button
-                                onClick={() => handleEditUser(user)}
-                                className="p-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors"
-                                title="Editar dados"
-                              >
-                                <Edit2 className="w-5 h-5" />
-                              </button>
-                              <button
-                                onClick={() => handleResetPassword(user)}
-                                className="p-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors"
-                                title="Resetar senha"
-                              >
-                                <Wrench className="w-5 h-5" />
-                              </button>
-                              <button
-                                onClick={() => handleDeleteUser(user.id)}
-                                className="p-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors"
-                                disabled={user.email === 'admin@admin.com'}
-                                title="Excluir"
-                              >
-                                <Trash2 className="w-5 h-5" />
-                              </button>
-                            </div>
-                          </td>
-                        </>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
           </div>
         )}
 
