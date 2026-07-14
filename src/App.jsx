@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v4.10-fix-pills-status-grid';
+const APP_VERSION = 'v4.11-ux-relatorio-cards';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -1718,108 +1718,135 @@ const ControlePonto = () => {
               if (!report) return null;
               const nomesMeses = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
               return (
-                <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-                  <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 text-white">
-                    <h3 className="text-2xl font-bold mb-2">Relatório de Ponto</h3>
-                    <p className="text-lg">Funcionário: {report.user.name}</p>
-                    <p className="text-indigo-100">
-                      Período: {nomesMeses[parseInt(reportMonth)]} de {reportYear}
+                <div>
+                  <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-xl p-5 text-white mb-3">
+                    <h3 className="text-xl font-bold">{report.user.name}</h3>
+                    <p className="text-indigo-100 text-sm mb-4">
+                      {nomesMeses[parseInt(reportMonth)]} de {reportYear}
                     </p>
+                    <div className="flex gap-3">
+                      <div className="flex-1 bg-white/10 rounded-lg p-3">
+                        <p className="text-indigo-100 text-xs mb-0.5">Horas trabalhadas</p>
+                        <p className="text-2xl font-bold">{formatHoras(report.totalHorasTrabalhadas)}</p>
+                      </div>
+                      <div className="flex-1 bg-white/10 rounded-lg p-3">
+                        <p className="text-indigo-100 text-xs mb-0.5">Horas extras</p>
+                        <p className={`text-2xl font-bold ${report.totalHorasExtras < 0 ? 'text-red-200' : 'text-green-200'}`}>
+                          {formatHoras(report.totalHorasExtras)}
+                        </p>
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead className="bg-gray-50 border-b border-gray-200">
-                        <tr>
-                          <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Data</th>
-                          <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Dia</th>
-                          <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Entrada</th>
-                          <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Início intervalo</th>
-                          <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Fim intervalo</th>
-                          <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">Saída</th>
-                          <th className="px-4 py-3 text-right font-semibold text-gray-700 whitespace-nowrap">Horas trabalhadas</th>
-                          <th className="px-4 py-3 text-right font-semibold text-gray-700 whitespace-nowrap">Horas extras</th>
-                          <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">Ajustar</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-100">
-                        {report.dias.map((dia) => {
-                          const diaSemana = getDiaSemana(dia.date);
-                          return (
-                          <tr key={dia.date} className={`${dia.status === 'sem-registro' ? 'text-gray-300' : 'text-gray-700'} ${diaSemana.isFimDeSemana ? 'bg-gray-50' : ''}`}>
-                            <td className="px-4 py-2 whitespace-nowrap font-medium">
-                              {formatDate(dia.date)}
-                              {dia.isManuallyAdjusted && (
-                                <span title={dia.adjustmentReason || 'Ajuste manual'}>
-                                  <Wrench className="w-3.5 h-3.5 inline ml-1.5 text-indigo-500 align-text-top" />
-                                </span>
+                  <div className="space-y-2">
+                    {report.dias.map((dia) => {
+                      const diaSemana = getDiaSemana(dia.date);
+                      const inconsistente = isDiaInconsistente(dia, diaSemana);
+                      const semNadaEspecial = dia.status === 'sem-registro' && !dia.isHoliday && !dia.isVacation && !dia.temAtestado;
+
+                      // Fim de semana comum, sem nenhum registro ou marcação especial:
+                      // vira uma linha fina, pra não poluir a tela com ~9 dias vazios por mês.
+                      if (diaSemana.isFimDeSemana && semNadaEspecial) {
+                        return (
+                          <div
+                            key={dia.date}
+                            onClick={() => openResolveModal(dia, reportUser)}
+                            className="px-4 py-1.5 text-xs text-gray-300 flex items-center justify-between cursor-pointer active:text-gray-400"
+                          >
+                            <span>{diaSemana.nome}, {formatDate(dia.date)}</span>
+                            <span>fim de semana</span>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div
+                          key={dia.date}
+                          onClick={() => openResolveModal(dia, reportUser)}
+                          className={`bg-white rounded-xl shadow-sm border p-4 cursor-pointer active:bg-gray-50 transition-colors ${
+                            inconsistente ? 'border-red-200' : 'border-gray-100'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2 mb-2">
+                            <div className="min-w-0">
+                              <p className="font-semibold text-gray-900">
+                                {diaSemana.nome}, {formatDate(dia.date)}
+                              </p>
+                              <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                                {dia.isManuallyAdjusted && (
+                                  <span title={dia.adjustmentReason || 'Ajuste manual'}>
+                                    <Wrench className="w-4 h-4 text-indigo-500" />
+                                  </span>
+                                )}
+                                {dia.temAtestado && (
+                                  <span title={`Atestado médico: ${dia.atestadoHoras}h — ${dia.atestadoJustificativa || ''}`}>
+                                    <Stethoscope className="w-4 h-4 text-rose-500" />
+                                  </span>
+                                )}
+                                {dia.isHoliday && (
+                                  <span title={`Feriado: ${dia.holidayDescription || ''}`}>
+                                    <PartyPopper className="w-4 h-4 text-amber-500" />
+                                  </span>
+                                )}
+                                {dia.isVacation && (
+                                  <span title={`Férias: ${formatDate(dia.vacationRange.start)} a ${formatDate(dia.vacationRange.end)}`}>
+                                    <Palmtree className="w-4 h-4 text-teal-500" />
+                                  </span>
+                                )}
+                                {inconsistente && (
+                                  <span title="Inconsistência">
+                                    <AlertTriangle className="w-4 h-4 text-red-500" />
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <Edit2 className="w-4 h-4 text-gray-300 flex-shrink-0 mt-1" />
+                          </div>
+
+                          {dia.status !== 'sem-registro' ? (
+                            <div className="flex items-center gap-1 text-sm font-mono text-gray-600 mb-3 flex-wrap">
+                              <span className="bg-gray-50 px-2 py-1 rounded">{formatHoraCurta(dia.entrada)}</span>
+                              {dia.inicioIntervalo && (
+                                <>
+                                  <span className="text-gray-300">→</span>
+                                  <span className="bg-gray-50 px-2 py-1 rounded text-gray-400">
+                                    {formatHoraCurta(dia.inicioIntervalo)}–{formatHoraCurta(dia.fimIntervalo)}
+                                  </span>
+                                </>
                               )}
-                              {dia.temAtestado && (
-                                <span title={`Atestado médico: ${dia.atestadoHoras}h — ${dia.atestadoJustificativa || ''}`}>
-                                  <Stethoscope className="w-3.5 h-3.5 inline ml-1.5 text-rose-500 align-text-top" />
-                                </span>
-                              )}
-                              {dia.isHoliday && (
-                                <span title={`Feriado: ${dia.holidayDescription || ''}`}>
-                                  <PartyPopper className="w-3.5 h-3.5 inline ml-1.5 text-amber-500 align-text-top" />
-                                </span>
-                              )}
-                              {dia.isVacation && (
-                                <span title={`Férias: ${formatDate(dia.vacationRange.start)} a ${formatDate(dia.vacationRange.end)}`}>
-                                  <Palmtree className="w-3.5 h-3.5 inline ml-1.5 text-teal-500 align-text-top" />
-                                </span>
-                              )}
-                              {isDiaInconsistente(dia, diaSemana) && (
-                                <span title="Inconsistência">
-                                  <AlertTriangle className="w-3.5 h-3.5 inline ml-1.5 text-red-500 align-text-top" />
-                                </span>
-                              )}
-                            </td>
-                            <td className={`px-4 py-2 whitespace-nowrap ${diaSemana.isFimDeSemana ? 'font-semibold text-gray-500' : ''}`}>{diaSemana.nome}</td>
-                            <td className="px-4 py-2 whitespace-nowrap font-mono">{formatHoraCurta(dia.entrada)}</td>
-                            <td className="px-4 py-2 whitespace-nowrap font-mono">{formatHoraCurta(dia.inicioIntervalo)}</td>
-                            <td className="px-4 py-2 whitespace-nowrap font-mono">{formatHoraCurta(dia.fimIntervalo)}</td>
-                            <td className="px-4 py-2 whitespace-nowrap font-mono">{formatHoraCurta(dia.saida)}</td>
-                            <td className="px-4 py-2 whitespace-nowrap text-right font-semibold">
+                              <span className="text-gray-300">→</span>
+                              <span className="bg-gray-50 px-2 py-1 rounded">{formatHoraCurta(dia.saida)}</span>
+                            </div>
+                          ) : (
+                            <p className="text-sm text-gray-300 mb-3">
+                              {dia.isVacation ? 'Férias' : dia.isHoliday ? 'Feriado' : dia.temAtestado ? 'Atestado médico' : 'Sem marcação'}
+                            </p>
+                          )}
+
+                          <div className="flex items-center justify-between text-sm pt-2 border-t border-gray-50">
+                            <span className="text-gray-500">
                               {dia.status === 'incompleto' ? (
-                                <span className="text-amber-600 text-xs">incompleto</span>
+                                <span className="text-amber-600 font-medium">Incompleto</span>
                               ) : (
-                                formatHoras(dia.horasTrabalhadas)
+                                <>Trabalhadas: <strong className="text-gray-700">{formatHoras(dia.horasTrabalhadas)}</strong></>
                               )}
-                            </td>
-                            <td className={`px-4 py-2 whitespace-nowrap text-right font-semibold ${
-                              dia.horasExtras === null ? '' : dia.horasExtras < 0 ? 'text-red-600' : 'text-green-600'
-                            }`}>
-                              {dia.status === 'incompleto' ? '—' : formatHoras(dia.horasExtras)}
-                            </td>
-                            <td className="px-4 py-2 whitespace-nowrap text-center">
-                              <button
-                                onClick={() => openResolveModal(dia, reportUser)}
-                                className="text-gray-400 hover:text-indigo-600 transition-colors"
-                                title="Ajustar este dia"
-                              >
-                                <Edit2 className="w-4 h-4 inline" />
-                              </button>
-                            </td>
-                          </tr>
-                          );
-                        })}
-                      </tbody>
-                      <tfoot className="bg-gray-50 border-t-2 border-gray-300">
-                        <tr>
-                          <td colSpan={6} className="px-4 py-3 text-right font-bold text-gray-900">Total do mês</td>
-                          <td className="px-4 py-3 text-right font-bold text-gray-900">{formatHoras(report.totalHorasTrabalhadas)}</td>
-                          <td className={`px-4 py-3 text-right font-bold ${report.totalHorasExtras < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                            {formatHoras(report.totalHorasExtras)}
-                          </td>
-                          <td></td>
-                        </tr>
-                      </tfoot>
-                    </table>
+                            </span>
+                            {dia.status !== 'incompleto' && dia.horasExtras !== null && (
+                              <span className={`font-semibold ${
+                                dia.horasExtras < 0 ? 'text-red-600' : dia.horasExtras > 0 ? 'text-green-600' : 'text-gray-400'
+                              }`}>
+                                {dia.horasExtras > 0 ? '+' : ''}{formatHoras(dia.horasExtras)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                  <div className="px-6 py-4 text-xs text-gray-400 border-t border-gray-100">
-                    * Dias com apenas 2 marcações consideram 1 hora de intervalo automática. Dias com 1 ou 3 marcações aparecem como "incompleto" e não entram no somatório. Dias sem nenhuma marcação não entram no somatório.
-                  </div>
+
+                  <p className="text-xs text-gray-400 text-center mt-4 px-4">
+                    Dias com 2 marcações consideram 1h de intervalo automática. Dias com 1 ou 3 marcações ficam "incompletos" e não entram no total. Toque em qualquer dia para ajustar.
+                  </p>
                 </div>
               );
             })()}
