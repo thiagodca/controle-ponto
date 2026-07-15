@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree } from 'lucide-react';
+import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree, Home } from 'lucide-react';
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v4.11-ux-relatorio-cards';
+const APP_VERSION = 'v5.0-home-bottomnav';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -265,7 +265,7 @@ const ControlePonto = () => {
         } else {
           setCurrentUser(user);
           setShowLogin(false);
-          setActiveView(user.profile === 'admin' ? 'users' : 'clock');
+          setActiveView(user.profile === 'admin' ? 'home' : 'clock');
           setLoginEmail('');
           setLoginPassword('');
         }
@@ -315,7 +315,7 @@ const ControlePonto = () => {
       setCurrentUser(userAtualizado);
       setShowPasswordSetup(false);
       setShowLogin(false);
-      setActiveView(userAtualizado.profile === 'admin' ? 'users' : 'clock');
+      setActiveView(userAtualizado.profile === 'admin' ? 'home' : 'clock');
       setNewPassword('');
       setConfirmPassword('');
       setLoginEmail('');
@@ -1118,6 +1118,45 @@ const ControlePonto = () => {
     return false;
   };
 
+  // Resumo para a tela de Início: total de inconsistências do mês atual
+  // (somando todos os funcionários) e quem está de férias hoje.
+  const getHomeSummary = () => {
+    const hoje = new Date();
+    const ano = hoje.getFullYear();
+    const mes = hoje.getMonth() + 1;
+    const hojeStr = `${ano}-${String(mes).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+    const diasNoMes = new Date(ano, mes, 0).getDate();
+    const funcionarios = users.filter(u => u.profile === 'employee');
+
+    let totalInconsistencias = 0;
+    funcionarios.forEach(func => {
+      const userRecords = timeRecords.filter(r => r.userId === func.id);
+      const userAtestados = medicalCertificates.filter(a => a.userId === func.id);
+      const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
+
+      for (let dia = 1; dia <= diasNoMes; dia++) {
+        const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+        if (dateStr >= hojeStr) continue;
+        if (holidays.some(h => h.date === dateStr)) continue;
+        if (isDateInVacation(func.id, dateStr)) continue;
+
+        const metrics = getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null);
+        const diaSemana = getDiaSemana(dateStr);
+        if (
+          metrics.status === 'incompleto' ||
+          metrics.atestadoInsuficiente ||
+          (metrics.status === 'sem-registro' && !diaSemana.isFimDeSemana)
+        ) {
+          totalInconsistencias++;
+        }
+      }
+    });
+
+    const funcionariosDeFerias = funcionarios.filter(func => getVacationForDate(func.id, hojeStr));
+
+    return { totalInconsistencias, funcionariosDeFerias, totalFuncionarios: funcionarios.length };
+  };
+
   const NOMES_DIAS_SEMANA = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
   // Retorna o nome do dia da semana e se é fim de semana, a partir de "YYYY-MM-DD".
@@ -1307,81 +1346,8 @@ const ControlePonto = () => {
         </div>
       </header>
 
-      {/* Navigation */}
-      <nav className="bg-white border-b border-gray-200 overflow-x-auto">
-        <div className="max-w-7xl mx-auto px-2 sm:px-6 lg:px-8">
-          <div className="flex space-x-1 whitespace-nowrap">
-            {currentUser?.profile === 'employee' && (
-              <button
-                onClick={() => setActiveView('clock')}
-                className={`px-4 sm:px-6 py-3 sm:py-4 text-sm sm:text-base font-medium transition-colors border-b-2 ${
-                  activeView === 'clock'
-                    ? 'border-indigo-600 text-indigo-600'
-                    : 'border-transparent text-gray-600 hover:text-gray-900'
-                }`}
-              >
-                <Clock className="inline w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
-                Registrar Ponto
-              </button>
-            )}
-            
-            {currentUser?.profile === 'admin' && (
-              <>
-                <button
-                  onClick={() => setActiveView('users')}
-                  className={`px-3 sm:px-6 py-3 sm:py-4 text-sm sm:text-base font-medium transition-colors border-b-2 ${
-                    activeView === 'users'
-                      ? 'border-indigo-600 text-indigo-600'
-                      : 'border-transparent text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  <Users className="inline w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
-                  Usuários
-                </button>
-                
-                <button
-                  onClick={() => setActiveView('report')}
-                  className={`px-3 sm:px-6 py-3 sm:py-4 text-sm sm:text-base font-medium transition-colors border-b-2 ${
-                    activeView === 'report'
-                      ? 'border-indigo-600 text-indigo-600'
-                      : 'border-transparent text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  <FileText className="inline w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
-                  Relatórios
-                </button>
-
-                <button
-                  onClick={() => setActiveView('inconsistencies')}
-                  className={`px-3 sm:px-6 py-3 sm:py-4 text-sm sm:text-base font-medium transition-colors border-b-2 ${
-                    activeView === 'inconsistencies'
-                      ? 'border-indigo-600 text-indigo-600'
-                      : 'border-transparent text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  <AlertTriangle className="inline w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
-                  Inconsistências
-                </button>
-
-                <button
-                  onClick={() => setActiveView('vacations')}
-                  className={`px-3 sm:px-6 py-3 sm:py-4 text-sm sm:text-base font-medium transition-colors border-b-2 ${
-                    activeView === 'vacations'
-                      ? 'border-indigo-600 text-indigo-600'
-                      : 'border-transparent text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  <Palmtree className="inline w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
-                  Férias
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      </nav>
-
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pb-24">
         
         {/* Tela de Registro de Ponto */}
         {activeView === 'clock' && currentUser?.profile === 'employee' && (
@@ -1450,6 +1416,95 @@ const ControlePonto = () => {
             </div>
           </div>
         )}
+
+        {/* Tela de Início */}
+        {activeView === 'home' && currentUser?.profile === 'admin' && (() => {
+          const resumo = getHomeSummary();
+          const hoje = new Date();
+          const nomesMeses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+          return (
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900 mb-1">Olá, {currentUser.name.split(' ')[0]}</h2>
+              <p className="text-gray-500 mb-6">{nomesMeses[hoje.getMonth()]} de {hoje.getFullYear()}</p>
+
+              <div className="space-y-3 mb-6">
+                <button
+                  onClick={() => setActiveView('inconsistencies')}
+                  className={`w-full text-left rounded-xl p-4 flex items-center gap-3 transition-colors ${
+                    resumo.totalInconsistencias > 0
+                      ? 'bg-red-50 border border-red-200 hover:bg-red-100'
+                      : 'bg-green-50 border border-green-200'
+                  }`}
+                >
+                  <AlertTriangle className={`w-6 h-6 flex-shrink-0 ${resumo.totalInconsistencias > 0 ? 'text-red-500' : 'text-green-500'}`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-gray-900">
+                      {resumo.totalInconsistencias > 0
+                        ? `${resumo.totalInconsistencias} inconsistência${resumo.totalInconsistencias > 1 ? 's' : ''} este mês`
+                        : 'Nenhuma inconsistência este mês'}
+                    </p>
+                    <p className="text-sm text-gray-500">Toque para revisar</p>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => setActiveView('vacations')}
+                  className="w-full text-left rounded-xl p-4 flex items-center gap-3 bg-teal-50 border border-teal-200 hover:bg-teal-100 transition-colors"
+                >
+                  <Palmtree className="w-6 h-6 flex-shrink-0 text-teal-600" />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-gray-900">
+                      {resumo.funcionariosDeFerias.length > 0
+                        ? `${resumo.funcionariosDeFerias.length} de férias agora`
+                        : 'Ninguém de férias agora'}
+                    </p>
+                    <p className="text-sm text-gray-500 truncate">
+                      {resumo.funcionariosDeFerias.length > 0
+                        ? resumo.funcionariosDeFerias.map(f => f.name).join(', ')
+                        : 'Toque para ver o calendário'}
+                    </p>
+                  </div>
+                </button>
+              </div>
+
+              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Atalhos</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => setActiveView('users')}
+                  className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-left hover:bg-gray-50 transition-colors"
+                >
+                  <Users className="w-6 h-6 text-blue-600 mb-2" />
+                  <p className="font-semibold text-gray-900">Usuários</p>
+                  <p className="text-xs text-gray-500">{resumo.totalFuncionarios} funcionário{resumo.totalFuncionarios !== 1 ? 's' : ''}</p>
+                </button>
+                <button
+                  onClick={() => setActiveView('report')}
+                  className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-left hover:bg-gray-50 transition-colors"
+                >
+                  <FileText className="w-6 h-6 text-indigo-600 mb-2" />
+                  <p className="font-semibold text-gray-900">Relatórios</p>
+                  <p className="text-xs text-gray-500">Horas por funcionário</p>
+                </button>
+                <button
+                  onClick={() => setActiveView('inconsistencies')}
+                  className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-left hover:bg-gray-50 transition-colors"
+                >
+                  <AlertTriangle className="w-6 h-6 text-red-500 mb-2" />
+                  <p className="font-semibold text-gray-900">Inconsistências</p>
+                  <p className="text-xs text-gray-500">Marcações a resolver</p>
+                </button>
+                <button
+                  onClick={() => setActiveView('vacations')}
+                  className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-left hover:bg-gray-50 transition-colors"
+                >
+                  <Palmtree className="w-6 h-6 text-teal-600 mb-2" />
+                  <p className="font-semibold text-gray-900">Férias</p>
+                  <p className="text-xs text-gray-500">Registrar e consultar</p>
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Tela de Gerenciamento de Usuários */}
         {activeView === 'users' && currentUser?.profile === 'admin' && (
@@ -2178,6 +2233,32 @@ const ControlePonto = () => {
         )}
 
       </main>
+
+      {/* Barra de navegação inferior (admin) */}
+      {currentUser?.profile === 'admin' && (
+        <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-40 pb-[env(safe-area-inset-bottom)]">
+          <div className="max-w-7xl mx-auto grid grid-cols-5">
+            {[
+              { view: 'home', label: 'Início', Icon: Home },
+              { view: 'users', label: 'Usuários', Icon: Users },
+              { view: 'report', label: 'Relatórios', Icon: FileText },
+              { view: 'inconsistencies', label: 'Inconsist.', Icon: AlertTriangle },
+              { view: 'vacations', label: 'Férias', Icon: Palmtree },
+            ].map(({ view, label, Icon }) => (
+              <button
+                key={view}
+                onClick={() => setActiveView(view)}
+                className={`flex flex-col items-center justify-center gap-0.5 py-2 transition-colors ${
+                  activeView === view ? 'text-indigo-600' : 'text-gray-400'
+                }`}
+              >
+                <Icon className="w-5 h-5" />
+                <span className="text-[10px] font-medium leading-none">{label}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
+      )}
 
       {/* Modal de ajuste/resolução de ponto */}
       {resolveModalOpen && (
