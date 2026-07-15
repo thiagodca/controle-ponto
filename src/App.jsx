@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v5.0-home-bottomnav';
+const APP_VERSION = 'v5.1-fix-reset-senha';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -154,6 +154,8 @@ const ControlePonto = () => {
   const [showUserForm, setShowUserForm] = useState(false);
   const [userSearchQuery, setUserSearchQuery] = useState('');
   const [userMenuOpenId, setUserMenuOpenId] = useState(null);
+  const [confirmResetPasswordUser, setConfirmResetPasswordUser] = useState(null);
+  const [resettingPassword, setResettingPassword] = useState(false);
   
   // Estado para registros de ponto
   const [timeRecords, setTimeRecords] = useState([]);
@@ -461,21 +463,24 @@ const ControlePonto = () => {
 
   // Reseta a senha do usuário para o padrão e marca como primeiro acesso,
   // forçando a criação de uma nova senha no próximo login.
-  const handleResetPassword = async (user) => {
-    if (!window.confirm(`Resetar a senha de ${user.name} para o padrão (123456)? A pessoa precisará criar uma nova senha no próximo login.`)) {
-      return;
-    }
+  // Executa de fato o reset de senha (chamado a partir do modal de confirmação
+  // em tela, sem depender de window.confirm — que se mostrou pouco confiável).
+  const handleResetPassword = async () => {
+    if (!confirmResetPasswordUser) return;
+    setResettingPassword(true);
     try {
       const atualizados = await supabaseRequest('usuarios', 'PATCH', {
-        query: `?id=eq.${user.id}`,
+        query: `?id=eq.${confirmResetPasswordUser.id}`,
         body: { password: '123456', first_access: true }
       });
       const userAtualizado = dbUserToApp(atualizados[0]);
       setUsers(users.map(u => u.id === userAtualizado.id ? userAtualizado : u));
-      alert(`Senha de ${user.name} resetada para 123456.`);
+      setConfirmResetPasswordUser(null);
     } catch (error) {
       console.error('Erro ao resetar senha:', error);
       alert('Não foi possível resetar a senha: ' + error.message);
+    } finally {
+      setResettingPassword(false);
     }
   };
 
@@ -1596,7 +1601,7 @@ const ControlePonto = () => {
                             Editar dados
                           </button>
                           <button
-                            onClick={() => { handleResetPassword(user); setUserMenuOpenId(null); }}
+                            onClick={() => { setConfirmResetPasswordUser(user); setUserMenuOpenId(null); }}
                             className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
                           >
                             <Wrench className="w-4 h-4 text-amber-600" />
@@ -2258,6 +2263,39 @@ const ControlePonto = () => {
             ))}
           </div>
         </nav>
+      )}
+
+      {/* Modal de confirmação de reset de senha */}
+      {confirmResetPasswordUser && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-sm">
+            <div className="p-6 text-center">
+              <div className="w-14 h-14 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Wrench className="w-7 h-7 text-amber-600" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 mb-2">Resetar senha?</h3>
+              <p className="text-gray-500 text-sm mb-6">
+                A senha de <strong>{confirmResetPasswordUser.name}</strong> volta para o padrão <strong>123456</strong>.
+                A pessoa vai precisar criar uma nova senha no próximo login.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setConfirmResetPasswordUser(null)}
+                  className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleResetPassword}
+                  disabled={resettingPassword}
+                  className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
+                >
+                  {resettingPassword ? 'Resetando...' : 'Confirmar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Modal de ajuste/resolução de ponto */}
