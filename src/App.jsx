@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v5.1-fix-reset-senha';
+const APP_VERSION = 'v5.2-ux-modal-ajuste';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -178,6 +178,7 @@ const ControlePonto = () => {
   // Inconsistências quanto na tela de Relatório, para qualquer dia)
   const [resolveModalOpen, setResolveModalOpen] = useState(false);
   const [resolveEhFeriado, setResolveEhFeriado] = useState(false);
+  const [resolveOriginalDia, setResolveOriginalDia] = useState(null);
   const [resolveUserId, setResolveUserId] = useState('');
   const [resolveDate, setResolveDate] = useState('');
   const [resolveEntrada, setResolveEntrada] = useState('');
@@ -794,12 +795,14 @@ const ControlePonto = () => {
     setResolveEhFeriado(!!dia.isHoliday);
     setResolveJustificativa('');
     setResolveError('');
+    setResolveOriginalDia(dia);
     setResolveModalOpen(true);
   };
 
   const closeResolveModal = () => {
     setResolveModalOpen(false);
     setResolveError('');
+    setResolveOriginalDia(null);
   };
 
   // Salva a correção de horários (e, se marcado, o atestado médico): valida,
@@ -2312,16 +2315,49 @@ const ControlePonto = () => {
             </div>
 
             <div className="p-5 space-y-4">
-              <label className="flex items-center gap-2 bg-gray-50 rounded-lg p-3 border border-gray-200">
-                <input
-                  type="checkbox"
-                  checked={resolveEhFeriado}
-                  onChange={(e) => setResolveEhFeriado(e.target.checked)}
-                  className="w-4 h-4"
-                />
-                <PartyPopper className="w-4 h-4 text-amber-500" />
-                <span className="text-sm font-medium text-gray-700">Este dia é feriado</span>
-              </label>
+              {resolveOriginalDia && (
+                <div className="bg-gray-50 rounded-lg px-3 py-2.5 text-xs text-gray-500">
+                  <strong className="text-gray-600">Atualmente: </strong>
+                  {resolveOriginalDia.isHoliday
+                    ? 'Feriado registrado'
+                    : resolveOriginalDia.isVacation
+                      ? 'Período de férias'
+                      : resolveOriginalDia.status === 'sem-registro'
+                        ? 'Nenhuma marcação registrada'
+                        : resolveOriginalDia.status === 'incompleto'
+                          ? 'Marcação incompleta (falta horário)'
+                          : `Entrada ${formatHoraCurta(resolveOriginalDia.entrada)}, Saída ${formatHoraCurta(resolveOriginalDia.saida)} · ${formatHoras(resolveOriginalDia.horasTrabalhadas)} trabalhadas`}
+                  {resolveOriginalDia.temAtestado && ` · Atestado de ${resolveOriginalDia.atestadoHoras}h`}
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setResolveEhFeriado(!resolveEhFeriado); setResolveTemAtestado(false); }}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-medium border transition-colors ${
+                    resolveEhFeriado
+                      ? 'bg-amber-500 text-white border-amber-500'
+                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  <PartyPopper className="w-4 h-4" />
+                  Feriado
+                </button>
+                <button
+                  type="button"
+                  disabled={resolveEhFeriado}
+                  onClick={() => setResolveTemAtestado(!resolveTemAtestado)}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-30 ${
+                    resolveTemAtestado
+                      ? 'bg-rose-500 text-white border-rose-500'
+                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  <Stethoscope className="w-4 h-4" />
+                  Atestado
+                </button>
+              </div>
 
               {resolveEhFeriado ? (
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
@@ -2329,78 +2365,71 @@ const ControlePonto = () => {
                 </div>
               ) : (
                 <>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Entrada {!resolveTemAtestado || parseFloat(resolveAtestadoHoras || 0) < JORNADA_DIARIA_HORAS ? '*' : ''}</label>
+                  {resolveTemAtestado && (
+                    <div className="bg-rose-50 border border-rose-200 rounded-lg p-3">
+                      <label className="block text-sm font-medium text-rose-800 mb-1">Quantidade de horas do atestado</label>
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0.5"
+                        max="24"
+                        value={resolveAtestadoHoras}
+                        onChange={(e) => setResolveAtestadoHoras(e.target.value)}
+                        placeholder="Ex: 4"
+                        className="w-full px-3 py-2 border border-rose-200 rounded-lg focus:border-rose-400 focus:outline-none bg-white"
+                      />
+                      <p className="text-xs text-rose-600 mt-1">
+                        Com atestado, a hora extra do dia nunca fica negativa. Com {JORNADA_DIARIA_HORAS}h de atestado, entrada/saída ficam opcionais.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Linha do tempo do dia, na ordem cronológica: Entrada → Início → Fim → Saída */}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2">
+                      <span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></span>
+                      <label className="flex-1 text-sm font-medium text-gray-700">Entrada</label>
                       <input
                         type="time"
                         value={resolveEntrada}
                         onChange={(e) => setResolveEntrada(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                        className="px-2 py-1.5 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
                       />
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Saída {!resolveTemAtestado || parseFloat(resolveAtestadoHoras || 0) < JORNADA_DIARIA_HORAS ? '*' : ''}</label>
-                      <input
-                        type="time"
-                        value={resolveSaida}
-                        onChange={(e) => setResolveSaida(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Início intervalo</label>
+                    <div className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2">
+                      <span className="w-2 h-2 rounded-full bg-gray-300 flex-shrink-0"></span>
+                      <label className="flex-1 text-sm font-medium text-gray-700">Início intervalo</label>
                       <input
                         type="time"
                         value={resolveInicioIntervalo}
                         onChange={(e) => setResolveInicioIntervalo(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                        className="px-2 py-1.5 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
                       />
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Fim intervalo</label>
+                    <div className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2">
+                      <span className="w-2 h-2 rounded-full bg-gray-300 flex-shrink-0"></span>
+                      <label className="flex-1 text-sm font-medium text-gray-700">Fim intervalo</label>
                       <input
                         type="time"
                         value={resolveFimIntervalo}
                         onChange={(e) => setResolveFimIntervalo(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                        className="px-2 py-1.5 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
+                      />
+                    </div>
+                    <div className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2">
+                      <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0"></span>
+                      <label className="flex-1 text-sm font-medium text-gray-700">Saída</label>
+                      <input
+                        type="time"
+                        value={resolveSaida}
+                        onChange={(e) => setResolveSaida(e.target.value)}
+                        className="px-2 py-1.5 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
                       />
                     </div>
                   </div>
                   <p className="text-xs text-gray-400">
-                    Entrada e Saída são obrigatórios (exceto se o atestado abaixo cobrir a jornada inteira de {JORNADA_DIARIA_HORAS}h). Intervalo é opcional, mas se preencher um, precisa preencher os dois.
+                    Entrada e Saída são obrigatórios{resolveTemAtestado ? ` (exceto com ${JORNADA_DIARIA_HORAS}h de atestado)` : ''}. Intervalo é opcional, mas se preencher um lado, precisa preencher o outro.
                   </p>
-
-                  <div className="border-t border-gray-200 pt-4">
-                    <label className="flex items-center gap-2 mb-2">
-                      <input
-                        type="checkbox"
-                        checked={resolveTemAtestado}
-                        onChange={(e) => setResolveTemAtestado(e.target.checked)}
-                        className="w-4 h-4"
-                      />
-                      <Stethoscope className="w-4 h-4 text-rose-500" />
-                      <span className="text-sm font-medium text-gray-700">Este dia teve atestado médico</span>
-                    </label>
-                    {resolveTemAtestado && (
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Quantidade de horas do atestado *</label>
-                        <input
-                          type="number"
-                          step="0.5"
-                          min="0.5"
-                          max="24"
-                          value={resolveAtestadoHoras}
-                          onChange={(e) => setResolveAtestadoHoras(e.target.value)}
-                          placeholder="Ex: 4"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
-                        />
-                        <p className="text-xs text-gray-400 mt-1">
-                          Com atestado, a hora extra deste dia nunca fica negativa. Se as horas do atestado forem iguais a {JORNADA_DIARIA_HORAS}h, não é preciso informar entrada/saída.
-                        </p>
-                      </div>
-                    )}
-                  </div>
                 </>
               )}
 
