@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v5.2-ux-modal-ajuste';
+const APP_VERSION = 'v5.3-fix-seguranca-senha';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -49,7 +49,6 @@ const dbUserToApp = (u) => ({
   id: u.id,
   name: u.name,
   email: u.email,
-  password: u.password,
   profile: u.profile,
   firstAccess: u.first_access,
 });
@@ -209,7 +208,7 @@ const ControlePonto = () => {
     setIsLoading(true);
     setLoadError('');
     try {
-      const usuarios = await supabaseRequest('usuarios', 'GET', { query: '?select=*&order=created_at.asc' });
+      const usuarios = await supabaseRequest('usuarios', 'GET', { query: '?select=id,name,email,profile,first_access,created_at&order=created_at.asc' });
       const usuariosMapeados = (usuarios || []).map(dbUserToApp);
       setUsers(usuariosMapeados);
 
@@ -244,22 +243,28 @@ const ControlePonto = () => {
   };
 
   // Função de login
-  const handleLogin = () => {
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  const handleLogin = async () => {
+    setLoginError('');
+    const emailNormalizado = String(loginEmail || '').trim().toLowerCase();
+    const senhaDigitada = String(loginPassword || '');
+
+    if (!emailNormalizado || !senhaDigitada) {
+      setLoginError('Preencha e-mail e senha.');
+      return;
+    }
+
+    setIsLoggingIn(true);
     try {
-      setLoginError('');
-      const emailNormalizado = String(loginEmail || '').trim().toLowerCase();
-      const senhaDigitada = String(loginPassword || '');
-      
-      if (!emailNormalizado || !senhaDigitada) {
-        setLoginError('Preencha e-mail e senha.');
-        return;
-      }
-      
-      const user = users.find(u => 
-        String(u.email || '').trim().toLowerCase() === emailNormalizado && 
-        String(u.password || '') === senhaDigitada
-      );
-      
+      const resultado = await supabaseRequest('rpc/verify_login', 'POST', {
+        body: { p_email: emailNormalizado, p_password: senhaDigitada }
+      });
+
+      const user = resultado && resultado[0]
+        ? { id: resultado[0].id, name: resultado[0].name, email: resultado[0].email, profile: resultado[0].profile, firstAccess: resultado[0].first_access }
+        : null;
+
       if (user) {
         if (user.firstAccess) {
           setLoginEmail(emailNormalizado);
@@ -278,6 +283,8 @@ const ControlePonto = () => {
     } catch (error) {
       console.error('Erro no login:', error);
       setLoginError('Erro inesperado ao entrar: ' + error.message);
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -309,7 +316,7 @@ const ControlePonto = () => {
       }
 
       const atualizados = await supabaseRequest('usuarios', 'PATCH', {
-        query: `?id=eq.${userAtual.id}`,
+        query: `?id=eq.${userAtual.id}&select=id,name,email,profile,first_access`,
         body: { password: newPassword, first_access: false }
       });
       const userAtualizado = dbUserToApp(atualizados[0]);
@@ -403,6 +410,7 @@ const ControlePonto = () => {
 
     try {
       const inseridos = await supabaseRequest('usuarios', 'POST', {
+        query: '?select=id,name,email,profile,first_access',
         body: {
           name: newUser.name,
           email: newUser.email.trim().toLowerCase(),
@@ -429,7 +437,7 @@ const ControlePonto = () => {
   const handleSaveEdit = async () => {
     try {
       const atualizados = await supabaseRequest('usuarios', 'PATCH', {
-        query: `?id=eq.${editingUser.id}`,
+        query: `?id=eq.${editingUser.id}&select=id,name,email,profile,first_access`,
         body: {
           name: editingUser.name,
           email: editingUser.email.trim().toLowerCase(),
@@ -471,7 +479,7 @@ const ControlePonto = () => {
     setResettingPassword(true);
     try {
       const atualizados = await supabaseRequest('usuarios', 'PATCH', {
-        query: `?id=eq.${confirmResetPasswordUser.id}`,
+        query: `?id=eq.${confirmResetPasswordUser.id}&select=id,name,email,profile,first_access`,
         body: { password: '123456', first_access: true }
       });
       const userAtualizado = dbUserToApp(atualizados[0]);
