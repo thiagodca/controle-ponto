@@ -3,9 +3,11 @@ import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v5.3-fix-seguranca-senha';
+const APP_VERSION = 'v5.4-exportar-pdf';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -739,6 +741,80 @@ const ControlePonto = () => {
     const totalHorasExtras = dias.reduce((acc, d) => acc + (d.horasExtras !== null ? d.horasExtras : 0), 0);
 
     return { user, dias, totalHorasTrabalhadas, totalHorasExtras };
+  };
+
+  // Gera e baixa um PDF do relatório mensal já calculado (report = retorno de generateReport()).
+  const handleExportReportPDF = (report) => {
+    const nomesMeses = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+    const nomeMes = nomesMeses[parseInt(reportMonth)];
+
+    const doc = new jsPDF();
+
+    doc.setFontSize(16);
+    doc.setFont(undefined, 'bold');
+    doc.text('Relatório de Ponto', 14, 18);
+
+    doc.setFontSize(11);
+    doc.setFont(undefined, 'normal');
+    doc.text(`Funcionário: ${report.user.name}`, 14, 26);
+    doc.text(`Período: ${nomeMes} de ${reportYear}`, 14, 32);
+
+    doc.setFont(undefined, 'bold');
+    doc.text(`Horas trabalhadas: ${formatHoras(report.totalHorasTrabalhadas)}`, 14, 40);
+    doc.text(`Horas extras: ${formatHoras(report.totalHorasExtras)}`, 90, 40);
+    doc.setFont(undefined, 'normal');
+
+    const linhas = report.dias.map((dia) => {
+      const diaSemana = getDiaSemana(dia.date);
+      const observacoes = [];
+      if (dia.isManuallyAdjusted) observacoes.push('Ajuste manual');
+      if (dia.temAtestado) observacoes.push(`Atestado ${dia.atestadoHoras}h`);
+      if (dia.isHoliday) observacoes.push('Feriado');
+      if (dia.isVacation) observacoes.push('Férias');
+      if (dia.status === 'incompleto') observacoes.push('Incompleto');
+      if (isDiaInconsistente(dia, diaSemana)) observacoes.push('Inconsistência');
+
+      return [
+        formatDate(dia.date),
+        diaSemana.nome,
+        formatHoraCurta(dia.entrada),
+        formatHoraCurta(dia.inicioIntervalo),
+        formatHoraCurta(dia.fimIntervalo),
+        formatHoraCurta(dia.saida),
+        dia.status === 'incompleto' ? '—' : formatHoras(dia.horasTrabalhadas),
+        dia.status === 'incompleto' ? '—' : formatHoras(dia.horasExtras),
+        observacoes.join(', '),
+      ];
+    });
+
+    autoTable(doc, {
+      startY: 46,
+      head: [['Data', 'Dia', 'Entrada', 'Início Int.', 'Fim Int.', 'Saída', 'Trabalhadas', 'Extras', 'Observações']],
+      body: linhas,
+      styles: { fontSize: 7.5, cellPadding: 2 },
+      headStyles: { fillColor: [79, 70, 229] },
+      columnStyles: { 8: { cellWidth: 40 } },
+      didParseCell: (data) => {
+        // Destaca fins de semana em cinza claro
+        if (data.section === 'body') {
+          const dateStr = report.dias[data.row.index].date;
+          const diaSemana = getDiaSemana(dateStr);
+          if (diaSemana.isFimDeSemana) {
+            data.cell.styles.fillColor = [245, 245, 245];
+            data.cell.styles.textColor = [160, 160, 160];
+          }
+        }
+      },
+    });
+
+    const dataGeracao = new Date().toLocaleString('pt-BR');
+    const paginaAltura = doc.internal.pageSize.getHeight();
+    doc.setFontSize(8);
+    doc.setTextColor(150);
+    doc.text(`Gerado em ${dataGeracao}`, 14, paginaAltura - 10);
+
+    const nomeArquivo = `relatorio-${report.user.name.replace(/\s+/g, '_').toLowerCase()}-${reportMonth}-${reportYear}.pdf`;
+    doc.save(nomeArquivo);
   };
 
   // Gera a lista de inconsistências (dias com 1 ou 3 marcações) de um
@@ -1791,7 +1867,16 @@ const ControlePonto = () => {
               return (
                 <div>
                   <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-xl p-5 text-white mb-3">
-                    <h3 className="text-xl font-bold">{report.user.name}</h3>
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <h3 className="text-xl font-bold">{report.user.name}</h3>
+                      <button
+                        onClick={() => handleExportReportPDF(report)}
+                        className="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 transition-colors px-3 py-1.5 rounded-lg text-sm font-medium flex-shrink-0"
+                      >
+                        <Download className="w-4 h-4" />
+                        PDF
+                      </button>
+                    </div>
                     <p className="text-indigo-100 text-sm mb-4">
                       {nomesMeses[parseInt(reportMonth)]} de {reportYear}
                     </p>
