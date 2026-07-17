@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v5.4-exportar-pdf';
+const APP_VERSION = 'v5.5-alertas-horas-extras';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -163,6 +163,7 @@ const ControlePonto = () => {
   const [holidays, setHolidays] = useState([]); // array de {date, description}
   const [medicalCertificates, setMedicalCertificates] = useState([]); // [{id, userId, date, hours, justification}]
   const [vacations, setVacations] = useState([]); // [{id, userId, userName, startDate, endDate}]
+  const [overtimeAlerts, setOvertimeAlerts] = useState([]); // [{id, userId, userName, type, thresholdHours}]
   
   // Estado para relatório — mês e ano do relatório vêm pré-selecionados com o mês atual
   const nowParaDefaults = new Date();
@@ -232,6 +233,15 @@ const ControlePonto = () => {
         userName: usuariosMapeados.find(u => u.id === v.user_id)?.name || '(usuário removido)',
         startDate: v.start_date,
         endDate: v.end_date,
+      })));
+
+      const alertasDb = await supabaseRequest('alertas_horas_extras', 'GET', { query: '?select=*' });
+      setOvertimeAlerts((alertasDb || []).map(a => ({
+        id: a.id,
+        userId: a.user_id,
+        userName: usuariosMapeados.find(u => u.id === a.user_id)?.name || '(usuário removido)',
+        type: a.type,
+        thresholdHours: parseFloat(a.threshold_hours),
       })));
 
       setStorageAvailable(true);
@@ -1190,6 +1200,118 @@ const ControlePonto = () => {
     }
   };
 
+  // ===== Alertas de horas extras =====
+  const [showAlertForm, setShowAlertForm] = useState(false);
+  const [alertUserId, setAlertUserId] = useState('');
+  const [alertType, setAlertType] = useState('diario'); // 'diario' | 'semanal' | 'mensal'
+  const [alertThreshold, setAlertThreshold] = useState('');
+  const [alertError, setAlertError] = useState('');
+  const [alertSaving, setAlertSaving] = useState(false);
+  const [confirmDeleteAlert, setConfirmDeleteAlert] = useState(null);
+
+  const resetAlertForm = () => {
+    setShowAlertForm(false);
+    setAlertUserId('');
+    setAlertType('diario');
+    setAlertThreshold('');
+    setAlertError('');
+  };
+
+  const handleSaveAlert = async () => {
+    setAlertError('');
+    if (!alertUserId || !alertThreshold || parseFloat(alertThreshold) <= 0) {
+      setAlertError('Selecione o funcionário e informe um limite de horas maior que zero.');
+      return;
+    }
+    setAlertSaving(true);
+    try {
+      const usuarioAlvo = users.find(u => u.id === alertUserId);
+      const inserido = await supabaseRequest('alertas_horas_extras', 'POST', {
+        body: { user_id: alertUserId, type: alertType, threshold_hours: parseFloat(alertThreshold) }
+      });
+      const novo = inserido[0];
+      setOvertimeAlerts([...overtimeAlerts, {
+        id: novo.id, userId: novo.user_id, userName: usuarioAlvo.name, type: novo.type, thresholdHours: parseFloat(novo.threshold_hours)
+      }]);
+      resetAlertForm();
+    } catch (error) {
+      console.error('Erro ao salvar alerta:', error);
+      setAlertError('Erro ao salvar: ' + error.message);
+    } finally {
+      setAlertSaving(false);
+    }
+  };
+
+  const handleDeleteAlert = async () => {
+    if (!confirmDeleteAlert) return;
+    try {
+      await supabaseRequest('alertas_horas_extras', 'DELETE', { query: `?id=eq.${confirmDeleteAlert.id}` });
+      setOvertimeAlerts(overtimeAlerts.filter(a => a.id !== confirmDeleteAlert.id));
+      setConfirmDeleteAlert(null);
+    } catch (error) {
+      console.error('Erro ao excluir alerta:', error);
+      alert('Não foi possível excluir: ' + error.message);
+    }
+  };
+
+  // Soma as horas extras de uma lista de datas para um funcionário, usando as
+  // mesmas regras do relatório (atestado, feriado, férias já consideradas).
+  const somarHorasExtrasDatas = (userId, datas) => {
+    const userRecords = timeRecords.filter(r => r.userId === userId);
+    const userAtestados = medicalCertificates.filter(a => a.userId === userId);
+    const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
+    const feriadoPorData = Object.fromEntries(holidays.map(h => [h.date, h]));
+
+    return datas.reduce((soma, dateStr) => {
+      const metrics = getDayMetrics(
+        dateStr, userRecords,
+        atestadoPorData[dateStr] || null,
+        feriadoPorData[dateStr] || null,
+        getVacationForDate(userId, dateStr)
+      );
+      return soma + (metrics.horasExtras || 0);
+    }, 0);
+  };
+
+  // Calcula as horas extras acumuladas "até agora" no período do alerta
+  // (dia de hoje, semana atual começando na segunda, ou mês atual).
+  const getAlertCurrentHours = (alert) => {
+    const hoje = new Date();
+    const hojeStr = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+
+    if (alert.type === 'diario') {
+      return somarHorasExtrasDatas(alert.userId, [hojeStr]);
+    }
+
+    if (alert.type === 'semanal') {
+      const diaSemanaHoje = hoje.getDay(); // 0 = domingo
+      const deslocamentoSegunda = diaSemanaHoje === 0 ? 6 : diaSemanaHoje - 1;
+      const datas = [];
+      for (let i = 0; i <= deslocamentoSegunda; i++) {
+        const d = new Date(hoje);
+        d.setDate(hoje.getDate() - deslocamentoSegunda + i);
+        datas.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+      }
+      return somarHorasExtrasDatas(alert.userId, datas);
+    }
+
+    // mensal
+    const ano = hoje.getFullYear();
+    const mes = hoje.getMonth() + 1;
+    const datas = [];
+    for (let dia = 1; dia <= hoje.getDate(); dia++) {
+      datas.push(`${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`);
+    }
+    return somarHorasExtrasDatas(alert.userId, datas);
+  };
+
+  const getAlertsWithStatus = () => {
+    return overtimeAlerts.map(alert => {
+      const horasAtuais = getAlertCurrentHours(alert);
+      return { ...alert, horasAtuais, disparado: horasAtuais >= alert.thresholdHours };
+    });
+  };
+
   const formatDate = (dateStr) => {
     const [year, month, day] = dateStr.split('-');
     return `${day}/${month}/${year}`;
@@ -1514,6 +1636,7 @@ const ControlePonto = () => {
           const resumo = getHomeSummary();
           const hoje = new Date();
           const nomesMeses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+          const alertasDisparados = getAlertsWithStatus().filter(a => a.disparado);
           return (
             <div>
               <h2 className="text-2xl font-bold text-gray-900 mb-1">Olá, {currentUser.name.split(' ')[0]}</h2>
@@ -1557,6 +1680,29 @@ const ControlePonto = () => {
                     </p>
                   </div>
                 </button>
+
+                <button
+                  onClick={() => setActiveView('alerts')}
+                  className={`w-full text-left rounded-xl p-4 flex items-center gap-3 transition-colors ${
+                    alertasDisparados.length > 0
+                      ? 'bg-red-50 border border-red-200 hover:bg-red-100'
+                      : 'bg-gray-50 border border-gray-200 hover:bg-gray-100'
+                  }`}
+                >
+                  <AlertTriangle className={`w-6 h-6 flex-shrink-0 ${alertasDisparados.length > 0 ? 'text-red-500' : 'text-gray-400'}`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-gray-900">
+                      {alertasDisparados.length > 0
+                        ? `${alertasDisparados.length} alerta${alertasDisparados.length > 1 ? 's' : ''} de hora extra ativo${alertasDisparados.length > 1 ? 's' : ''}`
+                        : 'Nenhum alerta de hora extra ativo'}
+                    </p>
+                    <p className="text-sm text-gray-500 truncate">
+                      {alertasDisparados.length > 0
+                        ? alertasDisparados.map(a => a.userName).join(', ')
+                        : 'Toque para configurar'}
+                    </p>
+                  </div>
+                </button>
               </div>
 
               <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Atalhos</h3>
@@ -1592,6 +1738,14 @@ const ControlePonto = () => {
                   <Palmtree className="w-6 h-6 text-teal-600 mb-2" />
                   <p className="font-semibold text-gray-900">Férias</p>
                   <p className="text-xs text-gray-500">Registrar e consultar</p>
+                </button>
+                <button
+                  onClick={() => setActiveView('alerts')}
+                  className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-left hover:bg-gray-50 transition-colors col-span-2"
+                >
+                  <AlertTriangle className="w-6 h-6 text-orange-500 mb-2" />
+                  <p className="font-semibold text-gray-900">Alertas de Horas Extras</p>
+                  <p className="text-xs text-gray-500">{overtimeAlerts.length} configurado{overtimeAlerts.length !== 1 ? 's' : ''}</p>
                 </button>
               </div>
             </div>
@@ -2332,6 +2486,184 @@ const ControlePonto = () => {
             )}
           </div>
         )}
+
+        {/* Tela de Alertas de Horas Extras */}
+        {activeView === 'alerts' && currentUser?.profile === 'admin' && (() => {
+          const alertasComStatus = getAlertsWithStatus();
+          const labelTipo = { diario: 'Diário', semanal: 'Semanal', mensal: 'Mensal' };
+          return (
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-2xl font-bold text-gray-900">Alertas de Horas Extras</h2>
+                <button
+                  onClick={() => setShowAlertForm(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium"
+                >
+                  <Plus className="w-5 h-5" />
+                  Novo
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                {alertasComStatus.map(alert => (
+                  <div
+                    key={alert.id}
+                    className={`bg-white rounded-xl shadow-sm border p-4 flex items-center gap-3 ${
+                      alert.disparado ? 'border-red-200' : 'border-gray-100'
+                    }`}
+                  >
+                    <div className={`w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 ${
+                      alert.disparado ? 'bg-red-100' : 'bg-gray-100'
+                    }`}>
+                      <AlertTriangle className={`w-5 h-5 ${alert.disparado ? 'text-red-500' : 'text-gray-400'}`} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-semibold text-gray-900 truncate">{alert.userName}</p>
+                      <p className="text-sm text-gray-500">
+                        {labelTipo[alert.type]} · limite {formatHoras(alert.thresholdHours)}
+                      </p>
+                      <p className={`text-sm font-semibold mt-0.5 ${alert.disparado ? 'text-red-600' : 'text-gray-400'}`}>
+                        {alert.disparado ? '⚠️ ' : ''}{formatHoras(alert.horasAtuais)} acumuladas
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setConfirmDeleteAlert(alert)}
+                      className="p-2.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex-shrink-0"
+                      title="Excluir alerta"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  </div>
+                ))}
+
+                {alertasComStatus.length === 0 && (
+                  <div className="bg-white rounded-xl shadow-sm p-8 text-center text-gray-500">
+                    Nenhum alerta configurado
+                  </div>
+                )}
+              </div>
+
+              {/* Modal de novo alerta */}
+              {showAlertForm && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+                  <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-md max-h-[90vh] overflow-y-auto">
+                    <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+                      <h3 className="text-lg font-bold text-gray-900">Novo alerta de horas extras</h3>
+                      <button onClick={resetAlertForm} className="p-1 text-gray-400 hover:text-gray-600">
+                        <X className="w-6 h-6" />
+                      </button>
+                    </div>
+                    <div className="p-5 space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Funcionário</label>
+                        <select
+                          value={alertUserId}
+                          onChange={(e) => setAlertUserId(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                        >
+                          <option value="">Selecione...</option>
+                          {users.filter(u => u.profile === 'employee').map(user => (
+                            <option key={user.id} value={user.id}>{user.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Frequência</label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {[
+                            { value: 'diario', label: 'Diário' },
+                            { value: 'semanal', label: 'Semanal' },
+                            { value: 'mensal', label: 'Mensal' },
+                          ].map(opt => (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              onClick={() => setAlertType(opt.value)}
+                              className={`py-2 rounded-lg text-sm font-medium border transition-colors ${
+                                alertType === opt.value
+                                  ? 'bg-indigo-600 text-white border-indigo-600'
+                                  : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          A partir de quantas horas extras avisar
+                        </label>
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0.5"
+                          value={alertThreshold}
+                          onChange={(e) => setAlertThreshold(e.target.value)}
+                          placeholder="Ex: 2"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                        />
+                      </div>
+
+                      {alertError && (
+                        <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
+                          {alertError}
+                        </div>
+                      )}
+
+                      <div className="flex gap-3 pt-2">
+                        <button
+                          onClick={resetAlertForm}
+                          className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          onClick={handleSaveAlert}
+                          disabled={alertSaving}
+                          className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
+                        >
+                          {alertSaving ? 'Salvando...' : 'Criar alerta'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Modal de confirmação de exclusão */}
+              {confirmDeleteAlert && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+                  <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-sm">
+                    <div className="p-6 text-center">
+                      <div className="w-14 h-14 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <Trash2 className="w-7 h-7 text-red-600" />
+                      </div>
+                      <h3 className="text-lg font-bold text-gray-900 mb-2">Excluir alerta?</h3>
+                      <p className="text-gray-500 text-sm mb-6">
+                        Alerta {labelTipo[confirmDeleteAlert.type]} de <strong>{confirmDeleteAlert.userName}</strong> (limite {formatHoras(confirmDeleteAlert.thresholdHours)})
+                      </p>
+                      <div className="flex gap-3">
+                        <button
+                          onClick={() => setConfirmDeleteAlert(null)}
+                          className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          onClick={handleDeleteAlert}
+                          className="flex-1 bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 transition-all"
+                        >
+                          Excluir
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
       </main>
 
