@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v5.6-home-compacta';
+const APP_VERSION = 'v5.7-fix-nav-inconsistencias';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -1334,41 +1334,55 @@ const ControlePonto = () => {
 
   // Resumo para a tela de Início: total de inconsistências do mês atual
   // (somando todos os funcionários) e quem está de férias hoje.
+  // Conta inconsistências por funcionário num mês/ano específicos — reaproveitado
+  // pela tela Início (mês atual) e pela tela de Inconsistências (mês selecionado).
+  const getInconsistencyCountsByMonth = (mes, ano) => {
+    const hoje = new Date();
+    const hojeStr = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+    const diasNoMes = new Date(ano, mes, 0).getDate();
+    const funcionarios = users.filter(u => u.profile === 'employee');
+
+    return funcionarios
+      .map(func => {
+        const userRecords = timeRecords.filter(r => r.userId === func.id);
+        const userAtestados = medicalCertificates.filter(a => a.userId === func.id);
+        const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
+
+        let count = 0;
+        for (let dia = 1; dia <= diasNoMes; dia++) {
+          const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+          if (dateStr >= hojeStr) continue;
+          if (holidays.some(h => h.date === dateStr)) continue;
+          if (isDateInVacation(func.id, dateStr)) continue;
+
+          const metrics = getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null);
+          const diaSemana = getDiaSemana(dateStr);
+          if (
+            metrics.status === 'incompleto' ||
+            metrics.atestadoInsuficiente ||
+            (metrics.status === 'sem-registro' && !diaSemana.isFimDeSemana)
+          ) {
+            count++;
+          }
+        }
+        return { userId: func.id, userName: func.name, count };
+      })
+      .filter(f => f.count > 0);
+  };
+
   const getHomeSummary = () => {
     const hoje = new Date();
     const ano = hoje.getFullYear();
     const mes = hoje.getMonth() + 1;
     const hojeStr = `${ano}-${String(mes).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
-    const diasNoMes = new Date(ano, mes, 0).getDate();
     const funcionarios = users.filter(u => u.profile === 'employee');
 
-    let totalInconsistencias = 0;
-    funcionarios.forEach(func => {
-      const userRecords = timeRecords.filter(r => r.userId === func.id);
-      const userAtestados = medicalCertificates.filter(a => a.userId === func.id);
-      const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
-
-      for (let dia = 1; dia <= diasNoMes; dia++) {
-        const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
-        if (dateStr >= hojeStr) continue;
-        if (holidays.some(h => h.date === dateStr)) continue;
-        if (isDateInVacation(func.id, dateStr)) continue;
-
-        const metrics = getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null);
-        const diaSemana = getDiaSemana(dateStr);
-        if (
-          metrics.status === 'incompleto' ||
-          metrics.atestadoInsuficiente ||
-          (metrics.status === 'sem-registro' && !diaSemana.isFimDeSemana)
-        ) {
-          totalInconsistencias++;
-        }
-      }
-    });
+    const inconsistenciasPorFuncionario = getInconsistencyCountsByMonth(mes, ano);
+    const totalInconsistencias = inconsistenciasPorFuncionario.reduce((acc, f) => acc + f.count, 0);
 
     const funcionariosDeFerias = funcionarios.filter(func => getVacationForDate(func.id, hojeStr));
 
-    return { totalInconsistencias, funcionariosDeFerias, totalFuncionarios: funcionarios.length };
+    return { totalInconsistencias, inconsistenciasPorFuncionario, funcionariosDeFerias, totalFuncionarios: funcionarios.length };
   };
 
   const NOMES_DIAS_SEMANA = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
@@ -1664,7 +1678,15 @@ const ControlePonto = () => {
 
               <div className="grid grid-cols-2 gap-2.5">
                 <Tile
-                  onClick={() => setActiveView('inconsistencies')}
+                  onClick={() => {
+                    const hojeNav = new Date();
+                    setInconsistencyMonth(String(hojeNav.getMonth() + 1).padStart(2, '0'));
+                    setInconsistencyYear(String(hojeNav.getFullYear()));
+                    if (resumo.inconsistenciasPorFuncionario.length > 0) {
+                      setInconsistencyUser(resumo.inconsistenciasPorFuncionario[0].userId);
+                    }
+                    setActiveView('inconsistencies');
+                  }}
                   Icon={AlertTriangle}
                   iconColor="text-green-500"
                   value={resumo.totalInconsistencias}
@@ -2171,11 +2193,34 @@ const ControlePonto = () => {
               </div>
             </div>
 
-            {!inconsistencyUser ? (
-              <div className="bg-white rounded-xl shadow-lg p-8 text-center text-gray-500">
-                Selecione um funcionário para buscar inconsistências.
-              </div>
-            ) : (() => {
+            {!inconsistencyUser ? (() => {
+              const afetados = getInconsistencyCountsByMonth(parseInt(inconsistencyMonth), parseInt(inconsistencyYear));
+              return (
+                <div className="bg-white rounded-xl shadow-lg p-6">
+                  {afetados.length === 0 ? (
+                    <p className="text-center text-gray-500 py-2">
+                      ✅ Nenhuma inconsistência neste mês. Selecione um funcionário acima para conferir mesmo assim.
+                    </p>
+                  ) : (
+                    <>
+                      <p className="text-sm text-gray-500 mb-3">Funcionários com inconsistências neste mês:</p>
+                      <div className="space-y-2">
+                        {afetados.map(f => (
+                          <button
+                            key={f.userId}
+                            onClick={() => setInconsistencyUser(f.userId)}
+                            className="w-full flex items-center justify-between bg-red-50 border border-red-200 hover:bg-red-100 transition-colors rounded-lg px-4 py-3 text-left"
+                          >
+                            <span className="font-medium text-gray-900">{f.userName}</span>
+                            <span className="text-red-600 text-sm font-semibold">{f.count} {f.count > 1 ? 'inconsistências' : 'inconsistência'}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })() : (() => {
               const resultado = generateInconsistencies();
               if (!resultado) return null;
               const nomesMeses = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
