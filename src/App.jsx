@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v5.5-alertas-horas-extras';
+const APP_VERSION = 'v5.6-home-compacta';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -1637,116 +1637,69 @@ const ControlePonto = () => {
           const hoje = new Date();
           const nomesMeses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
           const alertasDisparados = getAlertsWithStatus().filter(a => a.disparado);
+
+          const Tile = ({ onClick, Icon, iconColor, value, label, alerta, span2 }) => (
+            <button
+              onClick={onClick}
+              className={`text-left rounded-xl p-3.5 border transition-colors ${span2 ? 'col-span-2' : ''} ${
+                alerta ? 'bg-red-50 border-red-200 hover:bg-red-100' : 'bg-white border-gray-100 shadow-sm hover:bg-gray-50'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Icon className={`w-5 h-5 flex-shrink-0 ${alerta ? 'text-red-500' : iconColor}`} />
+                {value !== undefined && (
+                  <span className={`text-xl font-bold leading-none ${alerta ? 'text-red-600' : 'text-gray-900'}`}>{value}</span>
+                )}
+              </div>
+              <p className={`text-xs mt-1 truncate ${alerta ? 'text-red-700 font-medium' : 'text-gray-500'}`}>{label}</p>
+            </button>
+          );
+
           return (
             <div>
-              <h2 className="text-2xl font-bold text-gray-900 mb-1">Olá, {currentUser.name.split(' ')[0]}</h2>
-              <p className="text-gray-500 mb-6">{nomesMeses[hoje.getMonth()]} de {hoje.getFullYear()}</p>
-
-              <div className="space-y-3 mb-6">
-                <button
-                  onClick={() => setActiveView('inconsistencies')}
-                  className={`w-full text-left rounded-xl p-4 flex items-center gap-3 transition-colors ${
-                    resumo.totalInconsistencias > 0
-                      ? 'bg-red-50 border border-red-200 hover:bg-red-100'
-                      : 'bg-green-50 border border-green-200'
-                  }`}
-                >
-                  <AlertTriangle className={`w-6 h-6 flex-shrink-0 ${resumo.totalInconsistencias > 0 ? 'text-red-500' : 'text-green-500'}`} />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-gray-900">
-                      {resumo.totalInconsistencias > 0
-                        ? `${resumo.totalInconsistencias} inconsistência${resumo.totalInconsistencias > 1 ? 's' : ''} este mês`
-                        : 'Nenhuma inconsistência este mês'}
-                    </p>
-                    <p className="text-sm text-gray-500">Toque para revisar</p>
-                  </div>
-                </button>
-
-                <button
-                  onClick={() => setActiveView('vacations')}
-                  className="w-full text-left rounded-xl p-4 flex items-center gap-3 bg-teal-50 border border-teal-200 hover:bg-teal-100 transition-colors"
-                >
-                  <Palmtree className="w-6 h-6 flex-shrink-0 text-teal-600" />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-gray-900">
-                      {resumo.funcionariosDeFerias.length > 0
-                        ? `${resumo.funcionariosDeFerias.length} de férias agora`
-                        : 'Ninguém de férias agora'}
-                    </p>
-                    <p className="text-sm text-gray-500 truncate">
-                      {resumo.funcionariosDeFerias.length > 0
-                        ? resumo.funcionariosDeFerias.map(f => f.name).join(', ')
-                        : 'Toque para ver o calendário'}
-                    </p>
-                  </div>
-                </button>
-
-                <button
-                  onClick={() => setActiveView('alerts')}
-                  className={`w-full text-left rounded-xl p-4 flex items-center gap-3 transition-colors ${
-                    alertasDisparados.length > 0
-                      ? 'bg-red-50 border border-red-200 hover:bg-red-100'
-                      : 'bg-gray-50 border border-gray-200 hover:bg-gray-100'
-                  }`}
-                >
-                  <AlertTriangle className={`w-6 h-6 flex-shrink-0 ${alertasDisparados.length > 0 ? 'text-red-500' : 'text-gray-400'}`} />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-gray-900">
-                      {alertasDisparados.length > 0
-                        ? `${alertasDisparados.length} alerta${alertasDisparados.length > 1 ? 's' : ''} de hora extra ativo${alertasDisparados.length > 1 ? 's' : ''}`
-                        : 'Nenhum alerta de hora extra ativo'}
-                    </p>
-                    <p className="text-sm text-gray-500 truncate">
-                      {alertasDisparados.length > 0
-                        ? alertasDisparados.map(a => a.userName).join(', ')
-                        : 'Toque para configurar'}
-                    </p>
-                  </div>
-                </button>
+              <div className="flex items-baseline justify-between mb-4">
+                <h2 className="text-xl font-bold text-gray-900">Olá, {currentUser.name.split(' ')[0]}</h2>
+                <p className="text-gray-400 text-sm">{nomesMeses[hoje.getMonth()]}/{hoje.getFullYear()}</p>
               </div>
 
-              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Atalhos</h3>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={() => setActiveView('users')}
-                  className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-left hover:bg-gray-50 transition-colors"
-                >
-                  <Users className="w-6 h-6 text-blue-600 mb-2" />
-                  <p className="font-semibold text-gray-900">Usuários</p>
-                  <p className="text-xs text-gray-500">{resumo.totalFuncionarios} funcionário{resumo.totalFuncionarios !== 1 ? 's' : ''}</p>
-                </button>
-                <button
-                  onClick={() => setActiveView('report')}
-                  className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-left hover:bg-gray-50 transition-colors"
-                >
-                  <FileText className="w-6 h-6 text-indigo-600 mb-2" />
-                  <p className="font-semibold text-gray-900">Relatórios</p>
-                  <p className="text-xs text-gray-500">Horas por funcionário</p>
-                </button>
-                <button
+              <div className="grid grid-cols-2 gap-2.5">
+                <Tile
                   onClick={() => setActiveView('inconsistencies')}
-                  className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-left hover:bg-gray-50 transition-colors"
-                >
-                  <AlertTriangle className="w-6 h-6 text-red-500 mb-2" />
-                  <p className="font-semibold text-gray-900">Inconsistências</p>
-                  <p className="text-xs text-gray-500">Marcações a resolver</p>
-                </button>
-                <button
+                  Icon={AlertTriangle}
+                  iconColor="text-green-500"
+                  value={resumo.totalInconsistencias}
+                  label="Inconsistências"
+                  alerta={resumo.totalInconsistencias > 0}
+                />
+                <Tile
                   onClick={() => setActiveView('vacations')}
-                  className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-left hover:bg-gray-50 transition-colors"
-                >
-                  <Palmtree className="w-6 h-6 text-teal-600 mb-2" />
-                  <p className="font-semibold text-gray-900">Férias</p>
-                  <p className="text-xs text-gray-500">Registrar e consultar</p>
-                </button>
-                <button
+                  Icon={Palmtree}
+                  iconColor="text-teal-500"
+                  value={resumo.funcionariosDeFerias.length}
+                  label={resumo.funcionariosDeFerias.length > 0 ? resumo.funcionariosDeFerias.map(f => f.name).join(', ') : 'De férias agora'}
+                />
+                <Tile
                   onClick={() => setActiveView('alerts')}
-                  className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-left hover:bg-gray-50 transition-colors col-span-2"
-                >
-                  <AlertTriangle className="w-6 h-6 text-orange-500 mb-2" />
-                  <p className="font-semibold text-gray-900">Alertas de Horas Extras</p>
-                  <p className="text-xs text-gray-500">{overtimeAlerts.length} configurado{overtimeAlerts.length !== 1 ? 's' : ''}</p>
-                </button>
+                  Icon={AlertTriangle}
+                  iconColor="text-gray-400"
+                  value={alertasDisparados.length}
+                  label="Alertas de hora extra"
+                  alerta={alertasDisparados.length > 0}
+                />
+                <Tile
+                  onClick={() => setActiveView('users')}
+                  Icon={Users}
+                  iconColor="text-blue-600"
+                  value={resumo.totalFuncionarios}
+                  label="Funcionários"
+                />
+                <Tile
+                  onClick={() => setActiveView('report')}
+                  Icon={FileText}
+                  iconColor="text-indigo-600"
+                  label="Relatórios"
+                  span2
+                />
               </div>
             </div>
           );
