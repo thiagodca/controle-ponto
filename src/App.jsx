@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v5.7-fix-nav-inconsistencias';
+const APP_VERSION = 'v5.8-home-remove-relatorios';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -1714,13 +1714,6 @@ const ControlePonto = () => {
                   iconColor="text-blue-600"
                   value={resumo.totalFuncionarios}
                   label="Funcionários"
-                />
-                <Tile
-                  onClick={() => setActiveView('report')}
-                  Icon={FileText}
-                  iconColor="text-indigo-600"
-                  label="Relatórios"
-                  span2
                 />
               </div>
             </div>
