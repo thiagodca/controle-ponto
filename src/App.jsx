@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v5.9-alerta-ferias-proxima-semana';
+const APP_VERSION = 'v6.0-espelho-funcionario';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -170,6 +170,10 @@ const ControlePonto = () => {
   const [reportUser, setReportUser] = useState('');
   const [reportMonth, setReportMonth] = useState(String(nowParaDefaults.getMonth() + 1).padStart(2, '0'));
   const [reportYear, setReportYear] = useState(String(nowParaDefaults.getFullYear()));
+
+  // Estado para a tela "Meu Ponto" (funcionário vendo o próprio espelho de ponto)
+  const [myReportMonth, setMyReportMonth] = useState(String(nowParaDefaults.getMonth() + 1).padStart(2, '0'));
+  const [myReportYear, setMyReportYear] = useState(String(nowParaDefaults.getFullYear()));
 
   // Estado para a tela de Inconsistências
   const [inconsistencyUser, setInconsistencyUser] = useState('');
@@ -723,17 +727,17 @@ const ControlePonto = () => {
   };
 
   // Função para gerar relatório: uma linha para cada dia do mês/ano selecionado
-  const generateReport = () => {
-    if (!reportUser || !reportMonth || !reportYear) return null;
+  const generateReportFor = (userId, mesStr, anoStr) => {
+    if (!userId || !mesStr || !anoStr) return null;
 
-    const user = users.find(u => u.id === reportUser);
-    const userRecords = timeRecords.filter(r => r.userId === reportUser);
-    const userAtestados = medicalCertificates.filter(a => a.userId === reportUser);
+    const user = users.find(u => u.id === userId);
+    const userRecords = timeRecords.filter(r => r.userId === userId);
+    const userAtestados = medicalCertificates.filter(a => a.userId === userId);
     const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
     const feriadoPorData = Object.fromEntries(holidays.map(h => [h.date, h]));
 
-    const ano = parseInt(reportYear);
-    const mes = parseInt(reportMonth); // 1-12
+    const ano = parseInt(anoStr);
+    const mes = parseInt(mesStr); // 1-12
     const diasNoMes = new Date(ano, mes, 0).getDate();
 
     const dias = [];
@@ -743,7 +747,7 @@ const ControlePonto = () => {
         dateStr, userRecords,
         atestadoPorData[dateStr] || null,
         feriadoPorData[dateStr] || null,
-        getVacationForDate(reportUser, dateStr)
+        getVacationForDate(userId, dateStr)
       ));
     }
 
@@ -753,10 +757,12 @@ const ControlePonto = () => {
     return { user, dias, totalHorasTrabalhadas, totalHorasExtras };
   };
 
+  const generateReport = () => generateReportFor(reportUser, reportMonth, reportYear);
+
   // Gera e baixa um PDF do relatório mensal já calculado (report = retorno de generateReport()).
-  const handleExportReportPDF = (report) => {
+  const handleExportReportPDF = (report, mesStr, anoStr) => {
     const nomesMeses = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
-    const nomeMes = nomesMeses[parseInt(reportMonth)];
+    const nomeMes = nomesMeses[parseInt(mesStr)];
 
     const doc = new jsPDF();
 
@@ -767,7 +773,7 @@ const ControlePonto = () => {
     doc.setFontSize(11);
     doc.setFont(undefined, 'normal');
     doc.text(`Funcionário: ${report.user.name}`, 14, 26);
-    doc.text(`Período: ${nomeMes} de ${reportYear}`, 14, 32);
+    doc.text(`Período: ${nomeMes} de ${anoStr}`, 14, 32);
 
     doc.setFont(undefined, 'bold');
     doc.text(`Horas trabalhadas: ${formatHoras(report.totalHorasTrabalhadas)}`, 14, 40);
@@ -823,7 +829,7 @@ const ControlePonto = () => {
     doc.setTextColor(150);
     doc.text(`Gerado em ${dataGeracao}`, 14, paginaAltura - 10);
 
-    const nomeArquivo = `relatorio-${report.user.name.replace(/\s+/g, '_').toLowerCase()}-${reportMonth}-${reportYear}.pdf`;
+    const nomeArquivo = `relatorio-${report.user.name.replace(/\s+/g, '_').toLowerCase()}-${mesStr}-${anoStr}.pdf`;
     doc.save(nomeArquivo);
   };
 
@@ -1664,6 +1670,157 @@ const ControlePonto = () => {
           </div>
         )}
 
+        {/* Tela "Meu Espelho de Ponto" (funcionário vê o próprio relatório) */}
+        {activeView === 'myreport' && currentUser?.profile === 'employee' && (() => {
+          const nomesMeses = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+          const report = generateReportFor(currentUser.id, myReportMonth, myReportYear);
+          return (
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900 mb-6">Meu Espelho de Ponto</h2>
+
+              <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Mês</label>
+                    <select
+                      value={myReportMonth}
+                      onChange={(e) => setMyReportMonth(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                    >
+                      {nomesMeses.slice(1).map((nome, idx) => (
+                        <option key={idx} value={String(idx + 1).padStart(2, '0')}>{nome}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Ano</label>
+                    <input
+                      type="number"
+                      value={myReportYear}
+                      onChange={(e) => setMyReportYear(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {report && (
+                <div>
+                  <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-xl p-5 text-white mb-3">
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <h3 className="text-xl font-bold">{nomesMeses[parseInt(myReportMonth)]} de {myReportYear}</h3>
+                      <button
+                        onClick={() => handleExportReportPDF(report, myReportMonth, myReportYear)}
+                        className="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 transition-colors px-3 py-1.5 rounded-lg text-sm font-medium flex-shrink-0"
+                      >
+                        <Download className="w-4 h-4" />
+                        PDF
+                      </button>
+                    </div>
+                    <div className="flex gap-3 mt-4">
+                      <div className="flex-1 bg-white/10 rounded-lg p-3">
+                        <p className="text-indigo-100 text-xs mb-0.5">Horas trabalhadas</p>
+                        <p className="text-2xl font-bold">{formatHoras(report.totalHorasTrabalhadas)}</p>
+                      </div>
+                      <div className="flex-1 bg-white/10 rounded-lg p-3">
+                        <p className="text-indigo-100 text-xs mb-0.5">Horas extras</p>
+                        <p className={`text-2xl font-bold ${report.totalHorasExtras < 0 ? 'text-red-200' : 'text-green-200'}`}>
+                          {formatHoras(report.totalHorasExtras)}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    {report.dias.map((dia) => {
+                      const diaSemana = getDiaSemana(dia.date);
+                      const semNadaEspecial = dia.status === 'sem-registro' && !dia.isHoliday && !dia.isVacation && !dia.temAtestado;
+
+                      if (diaSemana.isFimDeSemana && semNadaEspecial) {
+                        return (
+                          <div key={dia.date} className="px-4 py-1.5 text-xs text-gray-300 flex items-center justify-between">
+                            <span>{diaSemana.nome}, {formatDate(dia.date)}</span>
+                            <span>fim de semana</span>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div key={dia.date} className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                          <div className="flex items-start justify-between gap-2 mb-2">
+                            <div className="min-w-0">
+                              <p className="font-semibold text-gray-900">{diaSemana.nome}, {formatDate(dia.date)}</p>
+                              <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                                {dia.isManuallyAdjusted && (
+                                  <span title={dia.adjustmentReason || 'Ajuste manual'}>
+                                    <Wrench className="w-4 h-4 text-indigo-500" />
+                                  </span>
+                                )}
+                                {dia.temAtestado && (
+                                  <span title={`Atestado médico: ${dia.atestadoHoras}h`}>
+                                    <Stethoscope className="w-4 h-4 text-rose-500" />
+                                  </span>
+                                )}
+                                {dia.isHoliday && (
+                                  <span title="Feriado">
+                                    <PartyPopper className="w-4 h-4 text-amber-500" />
+                                  </span>
+                                )}
+                                {dia.isVacation && (
+                                  <span title="Férias">
+                                    <Palmtree className="w-4 h-4 text-teal-500" />
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {dia.status !== 'sem-registro' ? (
+                            <div className="flex items-center gap-1 text-sm font-mono text-gray-600 mb-3 flex-wrap">
+                              <span className="bg-gray-50 px-2 py-1 rounded">{formatHoraCurta(dia.entrada)}</span>
+                              {dia.inicioIntervalo && (
+                                <>
+                                  <span className="text-gray-300">→</span>
+                                  <span className="bg-gray-50 px-2 py-1 rounded text-gray-400">
+                                    {formatHoraCurta(dia.inicioIntervalo)}–{formatHoraCurta(dia.fimIntervalo)}
+                                  </span>
+                                </>
+                              )}
+                              <span className="text-gray-300">→</span>
+                              <span className="bg-gray-50 px-2 py-1 rounded">{formatHoraCurta(dia.saida)}</span>
+                            </div>
+                          ) : (
+                            <p className="text-sm text-gray-300 mb-3">
+                              {dia.isVacation ? 'Férias' : dia.isHoliday ? 'Feriado' : dia.temAtestado ? 'Atestado médico' : 'Sem marcação'}
+                            </p>
+                          )}
+
+                          <div className="flex items-center justify-between text-sm pt-2 border-t border-gray-50">
+                            <span className="text-gray-500">
+                              {dia.status === 'incompleto' ? (
+                                <span className="text-amber-600 font-medium">Incompleto</span>
+                              ) : (
+                                <>Trabalhadas: <strong className="text-gray-700">{formatHoras(dia.horasTrabalhadas)}</strong></>
+                              )}
+                            </span>
+                            {dia.status !== 'incompleto' && dia.horasExtras !== null && (
+                              <span className={`font-semibold ${
+                                dia.horasExtras < 0 ? 'text-red-600' : dia.horasExtras > 0 ? 'text-green-600' : 'text-gray-400'
+                              }`}>
+                                {dia.horasExtras > 0 ? '+' : ''}{formatHoras(dia.horasExtras)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Tela de Início */}
         {activeView === 'home' && currentUser?.profile === 'admin' && (() => {
           const resumo = getHomeSummary();
@@ -2025,7 +2182,7 @@ const ControlePonto = () => {
                     <div className="flex items-start justify-between gap-2 mb-1">
                       <h3 className="text-xl font-bold">{report.user.name}</h3>
                       <button
-                        onClick={() => handleExportReportPDF(report)}
+                        onClick={() => handleExportReportPDF(report, reportMonth, reportYear)}
                         className="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 transition-colors px-3 py-1.5 rounded-lg text-sm font-medium flex-shrink-0"
                       >
                         <Download className="w-4 h-4" />
@@ -2711,6 +2868,29 @@ const ControlePonto = () => {
               >
                 <Icon className="w-5 h-5" />
                 <span className="text-[10px] font-medium leading-none">{label}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
+      )}
+
+      {/* Barra de navegação inferior (funcionário) */}
+      {currentUser?.profile === 'employee' && (
+        <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-40 pb-[env(safe-area-inset-bottom)]">
+          <div className="max-w-7xl mx-auto grid grid-cols-2">
+            {[
+              { view: 'clock', label: 'Registrar Ponto', Icon: Clock },
+              { view: 'myreport', label: 'Meu Espelho', Icon: FileText },
+            ].map(({ view, label, Icon }) => (
+              <button
+                key={view}
+                onClick={() => setActiveView(view)}
+                className={`flex flex-col items-center justify-center gap-0.5 py-2 transition-colors ${
+                  activeView === view ? 'text-indigo-600' : 'text-gray-400'
+                }`}
+              >
+                <Icon className="w-5 h-5" />
+                <span className="text-[11px] font-medium leading-none">{label}</span>
               </button>
             ))}
           </div>
