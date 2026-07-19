@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree, Home } from 'lucide-react';
+import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree, Home, CalendarClock } from 'lucide-react';
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v5.8-home-remove-relatorios';
+const APP_VERSION = 'v5.9-alerta-ferias-proxima-semana';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -1382,7 +1382,26 @@ const ControlePonto = () => {
 
     const funcionariosDeFerias = funcionarios.filter(func => getVacationForDate(func.id, hojeStr));
 
-    return { totalInconsistencias, inconsistenciasPorFuncionario, funcionariosDeFerias, totalFuncionarios: funcionarios.length };
+    // Férias que começam ou terminam (retorno ao trabalho) nos próximos 7 dias
+    const hojeZero = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate());
+    const seteDias = new Date(hojeZero);
+    seteDias.setDate(hojeZero.getDate() + 7);
+    const proximasMudancasFerias = [];
+    vacations.forEach(v => {
+      const inicio = new Date(v.startDate + 'T00:00:00');
+      const retorno = new Date(v.endDate + 'T00:00:00');
+      retorno.setDate(retorno.getDate() + 1); // dia em que volta ao trabalho
+
+      if (inicio > hojeZero && inicio <= seteDias) {
+        proximasMudancasFerias.push({ userName: v.userName, tipo: 'saida', data: inicio });
+      }
+      if (retorno > hojeZero && retorno <= seteDias) {
+        proximasMudancasFerias.push({ userName: v.userName, tipo: 'retorno', data: retorno });
+      }
+    });
+    proximasMudancasFerias.sort((a, b) => a.data - b.data);
+
+    return { totalInconsistencias, inconsistenciasPorFuncionario, funcionariosDeFerias, proximasMudancasFerias, totalFuncionarios: funcionarios.length };
   };
 
   const NOMES_DIAS_SEMANA = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
@@ -1714,6 +1733,20 @@ const ControlePonto = () => {
                   iconColor="text-blue-600"
                   value={resumo.totalFuncionarios}
                   label="Funcionários"
+                />
+                <Tile
+                  onClick={() => setActiveView('vacations')}
+                  Icon={CalendarClock}
+                  iconColor={resumo.proximasMudancasFerias.length > 0 ? 'text-amber-500' : 'text-gray-400'}
+                  value={resumo.proximasMudancasFerias.length}
+                  label={
+                    resumo.proximasMudancasFerias.length > 0
+                      ? resumo.proximasMudancasFerias
+                          .map(e => `${e.userName} ${e.tipo === 'saida' ? 'sai' : 'volta'} dia ${e.data.getDate()}`)
+                          .join(', ')
+                      : 'Sem mudanças de férias na semana'
+                  }
+                  span2
                 />
               </div>
             </div>
