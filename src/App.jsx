@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v6.0-espelho-funcionario';
+const APP_VERSION = 'v6.1-login-compacto';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -1429,46 +1429,46 @@ const ControlePonto = () => {
         background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
       }}>
         <div className="w-full max-w-md">
-          <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
-            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-8 text-white">
-              <div className="flex items-center justify-center mb-4">
-                <Clock className="w-16 h-16" />
+          <div className="bg-white rounded-2xl shadow-2xl overflow-y-auto max-h-[95vh]">
+            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 text-white">
+              <div className="flex items-center justify-center mb-2">
+                <Clock className="w-12 h-12" />
               </div>
-              <h1 className="text-3xl font-bold text-center">Controle de Ponto</h1>
-              <p className="text-center text-indigo-100 mt-2">Sistema de Gestão de Horários</p>
-              <p className="text-center text-indigo-200 text-xs mt-3 font-mono bg-black/20 rounded px-2 py-1 inline-block w-full">
+              <h1 className="text-2xl font-bold text-center">Controle de Ponto</h1>
+              <p className="text-center text-indigo-100 text-sm mt-1">Sistema de Gestão de Horários</p>
+              <p className="text-center text-indigo-200 text-[10px] mt-2 font-mono bg-black/20 rounded px-2 py-0.5 inline-block w-full">
                 {APP_VERSION}
               </p>
             </div>
             
             {isLoading ? (
-              <div className="p-8 text-center">
-                <div className="inline-block w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
+              <div className="p-6 text-center">
+                <div className="inline-block w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-3"></div>
                 <p className="text-gray-600">Carregando dados...</p>
               </div>
             ) : loadError ? (
-              <div className="p-8 text-center">
-                <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-4 mb-4 text-left">
+              <div className="p-6 text-center">
+                <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3 mb-3 text-left">
                   <p className="font-semibold mb-1">Não foi possível carregar os dados</p>
                   <p>{loadError}</p>
                 </div>
                 <button
                   onClick={loadData}
-                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-semibold hover:from-indigo-700 hover:to-purple-700 transition-all active:scale-95 shadow-lg"
+                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-2.5 rounded-lg font-semibold hover:from-indigo-700 hover:to-purple-700 transition-all active:scale-95 shadow-lg"
                 >
                   Tentar novamente
                 </button>
               </div>
             ) : !showPasswordSetup ? (
-              <div className="p-8">
-                <div className="space-y-4">
+              <div className="p-6">
+                <div className="space-y-3">
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">E-mail</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">E-mail</label>
                     <input
                       type="email"
                       value={loginEmail}
                       onChange={(e) => { setLoginEmail(e.target.value); setLoginError(''); }}
-                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-indigo-500 focus:outline-none transition-colors"
+                      className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-lg focus:border-indigo-500 focus:outline-none transition-colors"
                       placeholder="seu@email.com"
                       autoCapitalize="none"
                       autoCorrect="off"
@@ -1477,67 +1477,67 @@ const ControlePonto = () => {
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Senha</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">Senha</label>
                     <input
                       type="password"
                       value={loginPassword}
                       onChange={(e) => { setLoginPassword(e.target.value); setLoginError(''); }}
-                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-indigo-500 focus:outline-none transition-colors"
+                      className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-lg focus:border-indigo-500 focus:outline-none transition-colors"
                       placeholder="••••••••"
                       onKeyPress={(e) => e.key === 'Enter' && handleLogin()}
                     />
                   </div>
                   
                   {loginError && (
-                    <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
+                    <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-2.5">
                       {loginError}
                     </div>
                   )}
                   
                   <button
                     onClick={handleLogin}
-                    className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-semibold hover:from-indigo-700 hover:to-purple-700 transition-all active:scale-95 shadow-lg"
+                    className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-2.5 rounded-lg font-semibold hover:from-indigo-700 hover:to-purple-700 transition-all active:scale-95 shadow-lg"
                   >
                     <LogIn className="inline mr-2 w-5 h-5" />
                     Entrar
                   </button>
                 </div>
                 
-                <div className="mt-6 pt-6 border-t border-gray-200 text-center text-sm text-gray-600">
+                <div className="mt-4 pt-4 border-t border-gray-200 text-center text-xs text-gray-500">
                   <p>Primeiro acesso? Use a senha padrão: <strong>123456</strong></p>
                 </div>
               </div>
             ) : (
-              <div className="p-8">
-                <h2 className="text-2xl font-bold text-gray-800 mb-2">Primeiro Acesso</h2>
-                <p className="text-gray-600 mb-6">Configure sua senha pessoal</p>
+              <div className="p-6">
+                <h2 className="text-xl font-bold text-gray-800 mb-1">Primeiro Acesso</h2>
+                <p className="text-gray-600 text-sm mb-4">Configure sua senha pessoal</p>
                 
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Nova Senha</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">Nova Senha</label>
                     <input
                       type="password"
                       value={newPassword}
                       onChange={(e) => { setNewPassword(e.target.value); setPasswordError(''); }}
-                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-indigo-500 focus:outline-none transition-colors"
+                      className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-lg focus:border-indigo-500 focus:outline-none transition-colors"
                       placeholder="Mínimo 4 caracteres"
                     />
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Confirmar Senha</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">Confirmar Senha</label>
                     <input
                       type="password"
                       value={confirmPassword}
                       onChange={(e) => { setConfirmPassword(e.target.value); setPasswordError(''); }}
-                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-indigo-500 focus:outline-none transition-colors"
+                      className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-lg focus:border-indigo-500 focus:outline-none transition-colors"
                       placeholder="Digite a senha novamente"
                       onKeyPress={(e) => e.key === 'Enter' && handlePasswordSetup()}
                     />
                   </div>
                   
                   {passwordError && (
-                    <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
+                    <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-2.5">
                       {passwordError}
                     </div>
                   )}
@@ -1550,13 +1550,13 @@ const ControlePonto = () => {
                         setConfirmPassword('');
                         setPasswordError('');
                       }}
-                      className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors"
+                      className="flex-1 bg-gray-200 text-gray-700 py-2.5 rounded-lg font-semibold hover:bg-gray-300 transition-colors"
                     >
                       Cancelar
                     </button>
                     <button
                       onClick={handlePasswordSetup}
-                      className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-semibold hover:from-indigo-700 hover:to-purple-700 transition-all"
+                      className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-2.5 rounded-lg font-semibold hover:from-indigo-700 hover:to-purple-700 transition-all"
                     >
                       Confirmar
                     </button>
