@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v6.3-fix-header-safari-bar';
+const APP_VERSION = 'v6.4-fix-scroll-reset';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -210,6 +210,16 @@ const ControlePonto = () => {
   useEffect(() => {
     loadData();
   }, []);
+
+  // Corrige um bug real de mobile: quando o teclado abre na tela de login
+  // (para digitar e-mail/senha), o navegador rola a página para manter o
+  // campo visível. Essa posição de rolagem NÃO é resetada automaticamente
+  // quando o React troca a tela (login → app principal, ou troca de aba),
+  // fazendo a tela seguinte aparecer "pulada" para baixo, com o topo
+  // (cabeçalho) escondido acima da área visível. Forçamos o topo aqui.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [showLogin, activeView]);
 
   const loadData = async () => {
     setIsLoading(true);
@@ -1572,7 +1582,7 @@ const ControlePonto = () => {
 
   // Renderização do sistema principal
   return (
-    <div className="min-h-screen bg-gray-50 pt-16">
+    <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <header className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4">
