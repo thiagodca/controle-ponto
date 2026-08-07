@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v6.5-mostrar-senha';
+const APP_VERSION = 'v6.6-oculta-dias-futuros';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -753,9 +753,13 @@ const ControlePonto = () => {
     const mes = parseInt(mesStr); // 1-12
     const diasNoMes = new Date(ano, mes, 0).getDate();
 
+    const hoje = new Date();
+    const hojeStr = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+
     const dias = [];
     for (let dia = 1; dia <= diasNoMes; dia++) {
       const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+      if (dateStr > hojeStr) continue; // não faz sentido listar dias futuros
       dias.push(getDayMetrics(
         dateStr, userRecords,
         atestadoPorData[dateStr] || null,
