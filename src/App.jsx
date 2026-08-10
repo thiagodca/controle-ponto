@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v6.6-oculta-dias-futuros';
+const APP_VERSION = 'v6.7-limpar-horario-ajuste';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -3065,42 +3065,90 @@ const ControlePonto = () => {
                     <div className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2">
                       <span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></span>
                       <label className="flex-1 text-sm font-medium text-gray-700">Entrada</label>
-                      <input
-                        type="time"
-                        value={resolveEntrada}
-                        onChange={(e) => setResolveEntrada(e.target.value)}
-                        className="px-2 py-1.5 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
-                      />
+                      <div className="relative">
+                        <input
+                          type="time"
+                          value={resolveEntrada}
+                          onChange={(e) => setResolveEntrada(e.target.value)}
+                          className="px-2 py-1.5 pr-7 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
+                        />
+                        {resolveEntrada && (
+                          <button
+                            type="button"
+                            onClick={() => setResolveEntrada('')}
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                            aria-label="Limpar horário de entrada"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2">
                       <span className="w-2 h-2 rounded-full bg-gray-300 flex-shrink-0"></span>
                       <label className="flex-1 text-sm font-medium text-gray-700">Início intervalo</label>
-                      <input
-                        type="time"
-                        value={resolveInicioIntervalo}
-                        onChange={(e) => setResolveInicioIntervalo(e.target.value)}
-                        className="px-2 py-1.5 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
-                      />
+                      <div className="relative">
+                        <input
+                          type="time"
+                          value={resolveInicioIntervalo}
+                          onChange={(e) => setResolveInicioIntervalo(e.target.value)}
+                          className="px-2 py-1.5 pr-7 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
+                        />
+                        {resolveInicioIntervalo && (
+                          <button
+                            type="button"
+                            onClick={() => setResolveInicioIntervalo('')}
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                            aria-label="Limpar horário de início do intervalo"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2">
                       <span className="w-2 h-2 rounded-full bg-gray-300 flex-shrink-0"></span>
                       <label className="flex-1 text-sm font-medium text-gray-700">Fim intervalo</label>
-                      <input
-                        type="time"
-                        value={resolveFimIntervalo}
-                        onChange={(e) => setResolveFimIntervalo(e.target.value)}
-                        className="px-2 py-1.5 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
-                      />
+                      <div className="relative">
+                        <input
+                          type="time"
+                          value={resolveFimIntervalo}
+                          onChange={(e) => setResolveFimIntervalo(e.target.value)}
+                          className="px-2 py-1.5 pr-7 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
+                        />
+                        {resolveFimIntervalo && (
+                          <button
+                            type="button"
+                            onClick={() => setResolveFimIntervalo('')}
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                            aria-label="Limpar horário de fim do intervalo"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2">
                       <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0"></span>
                       <label className="flex-1 text-sm font-medium text-gray-700">Saída</label>
-                      <input
-                        type="time"
-                        value={resolveSaida}
-                        onChange={(e) => setResolveSaida(e.target.value)}
-                        className="px-2 py-1.5 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
-                      />
+                      <div className="relative">
+                        <input
+                          type="time"
+                          value={resolveSaida}
+                          onChange={(e) => setResolveSaida(e.target.value)}
+                          className="px-2 py-1.5 pr-7 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
+                        />
+                        {resolveSaida && (
+                          <button
+                            type="button"
+                            onClick={() => setResolveSaida('')}
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                            aria-label="Limpar horário de saída"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <p className="text-xs text-gray-400">
