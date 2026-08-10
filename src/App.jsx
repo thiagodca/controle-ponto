@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree, Home, CalendarClock, Eye, EyeOff } from 'lucide-react';
+import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree, Home, CalendarClock, Eye, EyeOff, HandCoins } from 'lucide-react';
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v6.12-observacoes-restrita-atestado-feriado-ferias';
+const APP_VERSION = 'v6.14-abono-no-pdf';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -165,6 +165,7 @@ const ControlePonto = () => {
   const [timeRecords, setTimeRecords] = useState([]);
   const [holidays, setHolidays] = useState([]); // array de {date, description}
   const [medicalCertificates, setMedicalCertificates] = useState([]); // [{id, userId, date, hours, justification}]
+  const [excusedHours, setExcusedHours] = useState([]); // [{id, userId, date, hours, justification}] — horas abonadas
   const [vacations, setVacations] = useState([]); // [{id, userId, userName, startDate, endDate}]
   const [overtimeAlerts, setOvertimeAlerts] = useState([]); // [{id, userId, userName, type, thresholdHours}]
   
@@ -196,6 +197,8 @@ const ControlePonto = () => {
   const [resolveSaida, setResolveSaida] = useState('');
   const [resolveTemAtestado, setResolveTemAtestado] = useState(false);
   const [resolveAtestadoHoras, setResolveAtestadoHoras] = useState('');
+  const [resolveTemAbono, setResolveTemAbono] = useState(false);
+  const [resolveAbonoHoras, setResolveAbonoHoras] = useState('');
   const [resolveJustificativa, setResolveJustificativa] = useState('');
   const [resolveError, setResolveError] = useState('');
   const [resolveSaving, setResolveSaving] = useState(false);
@@ -245,6 +248,11 @@ const ControlePonto = () => {
 
       const atestadosDb = await supabaseRequest('atestados', 'GET', { query: '?select=*' });
       setMedicalCertificates((atestadosDb || []).map(a => ({
+        id: a.id, userId: a.user_id, date: a.date, hours: parseFloat(a.hours), justification: a.justification
+      })));
+
+      const abonosDb = await supabaseRequest('horas_abonadas', 'GET', { query: '?select=*' });
+      setExcusedHours((abonosDb || []).map(a => ({
         id: a.id, userId: a.user_id, date: a.date, hours: parseFloat(a.hours), justification: a.justification
       })));
 
@@ -648,7 +656,7 @@ const ControlePonto = () => {
   // - Dia sem nenhuma marcação = não trabalhado; não entra no somatório.
   const JORNADA_DIARIA_HORAS = 8;
 
-  const getDayMetrics = (dateStr, allRecords, atestado = null, feriado = null, ferias = null) => {
+  const getDayMetrics = (dateStr, allRecords, atestado = null, feriado = null, ferias = null, abono = null) => {
     const dayRecords = allRecords
       .filter(r => r.date === dateStr)
       .sort((a, b) => a.time.localeCompare(b.time));
@@ -723,10 +731,28 @@ const ControlePonto = () => {
       horasExtras = Math.max(0, horasExtras);
     }
 
+    // Regras de horas abonadas: diferente do atestado, o abono NÃO soma às
+    // horas trabalhadas exibidas (o total trabalhado continua sendo o que o
+    // colaborador de fato bateu). O abono só evita que a falta gere hora
+    // extra negativa, abatendo exatamente o que faltou — se o abono for maior
+    // que a falta do dia, o excedente é descartado (nunca gera crédito
+    // positivo).
+    let abonoAplicado = 0;
+    if (abono && horasExtras !== null && horasExtras < 0) {
+      const falta = -horasExtras;
+      abonoAplicado = Math.min(abono.hours, falta);
+      horasExtras = horasExtras + abonoAplicado;
+    }
+
     // Nova inconsistência: mesmo com atestado, se o total de horas (lançamento
     // + atestado, ou só atestado quando não há lançamento) ficar abaixo da
     // jornada diária, ainda é uma inconsistência — falta alguma coisa explicar.
     const atestadoInsuficiente = !!(atestado && status === 'completo' && horasTrabalhadas < JORNADA_DIARIA_HORAS);
+
+    // Mesma ideia para abono: se o abono não foi suficiente para cobrir toda
+    // a falta do dia, ainda sobra hora extra negativa — sinaliza para o admin
+    // revisar (o abono parcial já foi aplicado acima, mas não resolveu tudo).
+    const abonoInsuficiente = !!(abono && status === 'completo' && horasExtras !== null && horasExtras < 0);
 
     const isManuallyAdjusted = dayRecords.some(r => r.manuallyAdjusted);
     const adjustmentReason = dayRecords.find(r => r.adjustmentReason)?.adjustmentReason || null;
@@ -739,6 +765,10 @@ const ControlePonto = () => {
       atestadoHoras: atestado ? atestado.hours : null,
       atestadoJustificativa: atestado ? atestado.justification : null,
       atestadoInsuficiente,
+      temAbono: !!abono,
+      abonoHoras: abono ? abono.hours : null,
+      abonoJustificativa: abono ? abono.justification : null,
+      abonoInsuficiente,
       isHoliday: !!feriado,
       holidayDescription: feriado ? feriado.description : null,
       isVacation: !!ferias,
@@ -765,6 +795,8 @@ const ControlePonto = () => {
     const userRecords = timeRecords.filter(r => r.userId === userId);
     const userAtestados = medicalCertificates.filter(a => a.userId === userId);
     const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
+    const userAbonos = excusedHours.filter(a => a.userId === userId);
+    const abonoPorData = Object.fromEntries(userAbonos.map(a => [a.date, a]));
     const feriadoPorData = Object.fromEntries(holidays.map(h => [h.date, h]));
 
     const ano = parseInt(anoStr);
@@ -782,7 +814,8 @@ const ControlePonto = () => {
         dateStr, userRecords,
         atestadoPorData[dateStr] || null,
         feriadoPorData[dateStr] || null,
-        getVacationForDate(userId, dateStr)
+        getVacationForDate(userId, dateStr),
+        abonoPorData[dateStr] || null
       ));
     }
 
@@ -821,6 +854,7 @@ const ControlePonto = () => {
 
       const observacoes = [];
       if (dia.temAtestado) observacoes.push(`Atestado ${dia.atestadoHoras}h`);
+      if (dia.temAbono) observacoes.push(`Abono ${dia.abonoHoras}h`);
       if (dia.isHoliday) observacoes.push('Feriado');
       if (dia.isVacation) observacoes.push('Férias');
 
@@ -878,6 +912,8 @@ const ControlePonto = () => {
     const userRecords = timeRecords.filter(r => r.userId === inconsistencyUser);
     const userAtestados = medicalCertificates.filter(a => a.userId === inconsistencyUser);
     const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
+    const userAbonos = excusedHours.filter(a => a.userId === inconsistencyUser);
+    const abonoPorData = Object.fromEntries(userAbonos.map(a => [a.date, a]));
 
     const ano = parseInt(inconsistencyYear);
     const mes = parseInt(inconsistencyMonth);
@@ -893,7 +929,7 @@ const ControlePonto = () => {
       if (holidays.some(h => h.date === dateStr)) continue; // dia marcado como feriado — resolvido
       if (isDateInVacation(inconsistencyUser, dateStr)) continue; // dia de férias — não é inconsistência
 
-      const metrics = getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null);
+      const metrics = getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null, null, null, abonoPorData[dateStr] || null);
       const diaSemana = getDiaSemana(dateStr);
 
       if (metrics.status === 'incompleto') {
@@ -905,6 +941,9 @@ const ControlePonto = () => {
         const motivo = metrics.entrada
           ? `Atestado de ${metrics.atestadoHoras}h somado às marcações totaliza apenas ${formatHoras(metrics.horasTrabalhadas)} — menos que a jornada de ${JORNADA_DIARIA_HORAS}h`
           : `Atestado de ${metrics.atestadoHoras}h não cobre a jornada de ${JORNADA_DIARIA_HORAS}h e não há nenhuma marcação de ponto`;
+        inconsistencias.push({ ...metrics, diaSemana, motivo });
+      } else if (metrics.abonoInsuficiente) {
+        const motivo = `Abono de ${metrics.abonoHoras}h não cobre toda a falta do dia — ainda restam ${formatHoras(-metrics.horasExtras)} não justificadas`;
         inconsistencias.push({ ...metrics, diaSemana, motivo });
       } else if (metrics.status === 'sem-registro' && !diaSemana.isFimDeSemana) {
         inconsistencias.push({ ...metrics, diaSemana, motivo: 'Dia útil sem nenhuma marcação de ponto' });
@@ -926,6 +965,8 @@ const ControlePonto = () => {
     setResolveSaida(dia.saida ? dia.saida.substring(0, 5) : '');
     setResolveTemAtestado(!!dia.temAtestado);
     setResolveAtestadoHoras(dia.atestadoHoras != null ? String(dia.atestadoHoras) : '');
+    setResolveTemAbono(!!dia.temAbono);
+    setResolveAbonoHoras(dia.abonoHoras != null ? String(dia.abonoHoras) : '');
     setResolveEhFeriado(!!dia.isHoliday);
     setResolveJustificativa('');
     setResolveError('');
@@ -955,7 +996,13 @@ const ControlePonto = () => {
       return;
     }
 
+    if (resolveTemAbono && (!resolveAbonoHoras || parseFloat(resolveAbonoHoras) <= 0)) {
+      setResolveError('Informe a quantidade de horas abonadas.');
+      return;
+    }
+
     const atestadoHorasNum = resolveTemAtestado ? parseFloat(resolveAtestadoHoras) : null;
+    const abonoHorasNum = resolveTemAbono ? parseFloat(resolveAbonoHoras) : null;
     const coberturaIntegral = resolveTemAtestado && atestadoHorasNum >= JORNADA_DIARIA_HORAS;
 
     // Entrada e saída só podem ficar em branco quando o atestado cobre a
@@ -1048,6 +1095,35 @@ const ControlePonto = () => {
         if (existente) {
           await supabaseRequest('atestados', 'DELETE', { query: `?id=eq.${existente.id}` });
           setMedicalCertificates(medicalCertificates.filter(a => a.id !== existente.id));
+        }
+      }
+
+      // Salva (ou remove) o abono de horas para este dia
+      if (resolveTemAbono) {
+        const existente = excusedHours.find(a => a.userId === resolveUserId && a.date === resolveDate);
+        if (existente) {
+          await supabaseRequest('horas_abonadas', 'PATCH', {
+            query: `?id=eq.${existente.id}`,
+            body: { hours: abonoHorasNum, justification: resolveJustificativa.trim() }
+          });
+          setExcusedHours(excusedHours.map(a =>
+            a.id === existente.id ? { ...a, hours: abonoHorasNum, justification: resolveJustificativa.trim() } : a
+          ));
+        } else {
+          const inserido = await supabaseRequest('horas_abonadas', 'POST', {
+            body: { user_id: resolveUserId, date: resolveDate, hours: abonoHorasNum, justification: resolveJustificativa.trim() }
+          });
+          const novo = inserido[0];
+          setExcusedHours([...excusedHours, {
+            id: novo.id, userId: novo.user_id, date: novo.date, hours: parseFloat(novo.hours), justification: novo.justification
+          }]);
+        }
+      } else {
+        // Se desmarcou o abono, remove um eventual abono salvo antes para este dia
+        const existente = excusedHours.find(a => a.userId === resolveUserId && a.date === resolveDate);
+        if (existente) {
+          await supabaseRequest('horas_abonadas', 'DELETE', { query: `?id=eq.${existente.id}` });
+          setExcusedHours(excusedHours.filter(a => a.id !== existente.id));
         }
       }
 
@@ -1320,6 +1396,8 @@ const ControlePonto = () => {
     const userRecords = timeRecords.filter(r => r.userId === userId);
     const userAtestados = medicalCertificates.filter(a => a.userId === userId);
     const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
+    const userAbonos = excusedHours.filter(a => a.userId === userId);
+    const abonoPorData = Object.fromEntries(userAbonos.map(a => [a.date, a]));
     const feriadoPorData = Object.fromEntries(holidays.map(h => [h.date, h]));
 
     return datas.reduce((soma, dateStr) => {
@@ -1327,7 +1405,8 @@ const ControlePonto = () => {
         dateStr, userRecords,
         atestadoPorData[dateStr] || null,
         feriadoPorData[dateStr] || null,
-        getVacationForDate(userId, dateStr)
+        getVacationForDate(userId, dateStr),
+        abonoPorData[dateStr] || null
       );
       return soma + (metrics.horasExtras || 0);
     }, 0);
@@ -1388,6 +1467,7 @@ const ControlePonto = () => {
     if (dia.isVacation) return false;
     if (dia.status === 'incompleto') return true;
     if (dia.atestadoInsuficiente) return true;
+    if (dia.abonoInsuficiente) return true;
     if (dia.status === 'sem-registro' && !diaSemana.isFimDeSemana) return true;
     return false;
   };
@@ -1407,6 +1487,8 @@ const ControlePonto = () => {
         const userRecords = timeRecords.filter(r => r.userId === func.id);
         const userAtestados = medicalCertificates.filter(a => a.userId === func.id);
         const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
+        const userAbonos = excusedHours.filter(a => a.userId === func.id);
+        const abonoPorData = Object.fromEntries(userAbonos.map(a => [a.date, a]));
 
         let count = 0;
         for (let dia = 1; dia <= diasNoMes; dia++) {
@@ -1415,11 +1497,12 @@ const ControlePonto = () => {
           if (holidays.some(h => h.date === dateStr)) continue;
           if (isDateInVacation(func.id, dateStr)) continue;
 
-          const metrics = getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null);
+          const metrics = getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null, null, null, abonoPorData[dateStr] || null);
           const diaSemana = getDiaSemana(dateStr);
           if (
             metrics.status === 'incompleto' ||
             metrics.atestadoInsuficiente ||
+            metrics.abonoInsuficiente ||
             (metrics.status === 'sem-registro' && !diaSemana.isFimDeSemana)
           ) {
             count++;
@@ -1843,6 +1926,11 @@ const ControlePonto = () => {
                                 {dia.temAtestado && (
                                   <span title={`Atestado médico: ${dia.atestadoHoras}h`}>
                                     <Stethoscope className="w-4 h-4 text-rose-500" />
+                                  </span>
+                                )}
+                                {dia.temAbono && (
+                                  <span title={`Horas abonadas: ${dia.abonoHoras}h`}>
+                                    <HandCoins className="w-4 h-4 text-emerald-500" />
                                   </span>
                                 )}
                                 {dia.isHoliday && (
@@ -2333,6 +2421,11 @@ const ControlePonto = () => {
                                 {dia.temAtestado && (
                                   <span title={`Atestado médico: ${dia.atestadoHoras}h — ${dia.atestadoJustificativa || ''}`}>
                                     <Stethoscope className="w-4 h-4 text-rose-500" />
+                                  </span>
+                                )}
+                                {dia.temAbono && (
+                                  <span title={`Horas abonadas: ${dia.abonoHoras}h — ${dia.abonoJustificativa || ''}`}>
+                                    <HandCoins className="w-4 h-4 text-emerald-500" />
                                   </span>
                                 )}
                                 {dia.isHoliday && (
@@ -3070,13 +3163,14 @@ const ControlePonto = () => {
                           ? 'Marcação incompleta (falta horário)'
                           : `Entrada ${formatHoraCurta(resolveOriginalDia.entrada)}, Saída ${formatHoraCurta(resolveOriginalDia.saida)} · ${formatHoras(resolveOriginalDia.horasTrabalhadas)} trabalhadas`}
                   {resolveOriginalDia.temAtestado && ` · Atestado de ${resolveOriginalDia.atestadoHoras}h`}
+                  {resolveOriginalDia.temAbono && ` · Abono de ${resolveOriginalDia.abonoHoras}h`}
                 </div>
               )}
 
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => { setResolveEhFeriado(!resolveEhFeriado); setResolveTemAtestado(false); }}
+                  onClick={() => { setResolveEhFeriado(!resolveEhFeriado); setResolveTemAtestado(false); setResolveTemAbono(false); }}
                   className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-medium border transition-colors ${
                     resolveEhFeriado
                       ? 'bg-amber-500 text-white border-amber-500'
@@ -3098,6 +3192,19 @@ const ControlePonto = () => {
                 >
                   <Stethoscope className="w-4 h-4" />
                   Atestado
+                </button>
+                <button
+                  type="button"
+                  disabled={resolveEhFeriado}
+                  onClick={() => setResolveTemAbono(!resolveTemAbono)}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-30 ${
+                    resolveTemAbono
+                      ? 'bg-emerald-500 text-white border-emerald-500'
+                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  <HandCoins className="w-4 h-4" />
+                  Abono
                 </button>
               </div>
 
@@ -3122,6 +3229,25 @@ const ControlePonto = () => {
                       />
                       <p className="text-xs text-rose-600 mt-1">
                         Com atestado, a hora extra do dia nunca fica negativa. Com {JORNADA_DIARIA_HORAS}h de atestado, entrada/saída ficam opcionais.
+                      </p>
+                    </div>
+                  )}
+
+                  {resolveTemAbono && (
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+                      <label className="block text-sm font-medium text-emerald-800 mb-1">Quantidade de horas abonadas</label>
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0.5"
+                        max="24"
+                        value={resolveAbonoHoras}
+                        onChange={(e) => setResolveAbonoHoras(e.target.value)}
+                        placeholder="Ex: 2"
+                        className="w-full px-3 py-2 border border-emerald-200 rounded-lg focus:border-emerald-400 focus:outline-none bg-white"
+                      />
+                      <p className="text-xs text-emerald-600 mt-1">
+                        O abono não soma ao total de horas trabalhadas — ele só evita que a falta do dia gere hora extra negativa (até o limite da própria falta).
                       </p>
                     </div>
                   )}
