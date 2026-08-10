@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v6.8-excluir-registro-dia';
+const APP_VERSION = 'v6.9-endereco-no-relatorio';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -654,9 +654,11 @@ const ControlePonto = () => {
       .sort((a, b) => a.time.localeCompare(b.time));
 
     const punches = dayRecords.map(r => r.time);
+    const addresses = dayRecords.map(r => r.address);
     const n = punches.length;
 
     let entrada = null, inicioIntervalo = null, fimIntervalo = null, saida = null;
+    let entradaAddress = null, inicioIntervaloAddress = null, fimIntervaloAddress = null, saidaAddress = null;
     let horasTrabalhadas = null;
     let status = 'sem-registro';
 
@@ -664,10 +666,13 @@ const ControlePonto = () => {
       status = 'sem-registro';
     } else if (n === 1) {
       entrada = punches[0];
+      entradaAddress = addresses[0];
       status = 'incompleto';
     } else if (n === 2) {
       entrada = punches[0];
       saida = punches[1];
+      entradaAddress = addresses[0];
+      saidaAddress = addresses[1];
       const totalMin = timeToMinutes(saida) - timeToMinutes(entrada) - 60; // assume 1h de intervalo
       horasTrabalhadas = Math.max(0, totalMin) / 60;
       status = 'completo';
@@ -675,12 +680,19 @@ const ControlePonto = () => {
       entrada = punches[0];
       inicioIntervalo = punches[1];
       fimIntervalo = punches[2];
+      entradaAddress = addresses[0];
+      inicioIntervaloAddress = addresses[1];
+      fimIntervaloAddress = addresses[2];
       status = 'incompleto'; // falta a marcação de saída
     } else {
       entrada = punches[0];
       inicioIntervalo = punches[1];
       fimIntervalo = punches[2];
       saida = punches[3];
+      entradaAddress = addresses[0];
+      inicioIntervaloAddress = addresses[1];
+      fimIntervaloAddress = addresses[2];
+      saidaAddress = addresses[3];
       const minTrabalhados = (timeToMinutes(inicioIntervalo) - timeToMinutes(entrada)) +
                               (timeToMinutes(saida) - timeToMinutes(fimIntervalo));
       horasTrabalhadas = Math.max(0, minTrabalhados) / 60;
@@ -721,6 +733,7 @@ const ControlePonto = () => {
 
     return {
       date: dateStr, entrada, inicioIntervalo, fimIntervalo, saida,
+      entradaAddress, inicioIntervaloAddress, fimIntervaloAddress, saidaAddress,
       horasTrabalhadas, horasExtras, status, isManuallyAdjusted, adjustmentReason,
       temAtestado: !!atestado,
       atestadoHoras: atestado ? atestado.hours : null,
@@ -2364,7 +2377,7 @@ const ControlePonto = () => {
                           </div>
 
                           {dia.status !== 'sem-registro' ? (
-                            <div className="flex items-center gap-1 text-sm font-mono text-gray-600 mb-3 flex-wrap">
+                            <div className="flex items-center gap-1 text-sm font-mono text-gray-600 mb-1 flex-wrap">
                               <span className="bg-gray-50 px-2 py-1 rounded">{formatHoraCurta(dia.entrada)}</span>
                               {dia.inicioIntervalo && (
                                 <>
@@ -2381,6 +2394,15 @@ const ControlePonto = () => {
                             <p className="text-sm text-gray-300 mb-3">
                               {dia.isVacation ? 'Férias' : dia.isHoliday ? 'Feriado' : dia.temAtestado ? 'Atestado médico' : 'Sem marcação'}
                             </p>
+                          )}
+
+                          {(dia.entradaAddress || dia.inicioIntervaloAddress || dia.fimIntervaloAddress || dia.saidaAddress) && (
+                            <div className="text-xs text-gray-400 mb-3 space-y-0.5">
+                              {dia.entradaAddress && <p>📍 Entrada: {dia.entradaAddress}</p>}
+                              {dia.inicioIntervaloAddress && <p>📍 Início intervalo: {dia.inicioIntervaloAddress}</p>}
+                              {dia.fimIntervaloAddress && <p>📍 Fim intervalo: {dia.fimIntervaloAddress}</p>}
+                              {dia.saidaAddress && <p>📍 Saída: {dia.saidaAddress}</p>}
+                            </div>
                           )}
 
                           <div className="flex items-center justify-between text-sm pt-2 border-t border-gray-50">
