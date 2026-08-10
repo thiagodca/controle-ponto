@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v6.9-endereco-no-relatorio';
+const APP_VERSION = 'v6.10-remove-observacoes-pdf';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -817,13 +817,6 @@ const ControlePonto = () => {
 
     const linhas = report.dias.map((dia) => {
       const diaSemana = getDiaSemana(dia.date);
-      const observacoes = [];
-      if (dia.isManuallyAdjusted) observacoes.push('Ajuste manual');
-      if (dia.temAtestado) observacoes.push(`Atestado ${dia.atestadoHoras}h`);
-      if (dia.isHoliday) observacoes.push('Feriado');
-      if (dia.isVacation) observacoes.push('Férias');
-      if (dia.status === 'incompleto') observacoes.push('Incompleto');
-      if (isDiaInconsistente(dia, diaSemana)) observacoes.push('Inconsistência');
 
       return [
         formatDate(dia.date),
@@ -834,17 +827,15 @@ const ControlePonto = () => {
         formatHoraCurta(dia.saida),
         dia.status === 'incompleto' ? '—' : formatHoras(dia.horasTrabalhadas),
         dia.status === 'incompleto' ? '—' : formatHoras(dia.horasExtras),
-        observacoes.join(', '),
       ];
     });
 
     autoTable(doc, {
       startY: 46,
-      head: [['Data', 'Dia', 'Entrada', 'Início Int.', 'Fim Int.', 'Saída', 'Trabalhadas', 'Extras', 'Observações']],
+      head: [['Data', 'Dia', 'Entrada', 'Início Int.', 'Fim Int.', 'Saída', 'Trabalhadas', 'Extras']],
       body: linhas,
       styles: { fontSize: 7.5, cellPadding: 2 },
       headStyles: { fillColor: [79, 70, 229] },
-      columnStyles: { 8: { cellWidth: 40 } },
       didParseCell: (data) => {
         // Destaca fins de semana em cinza claro
         if (data.section === 'body') {
