@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v6.7-limpar-horario-ajuste';
+const APP_VERSION = 'v6.8-excluir-registro-dia';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -199,6 +199,11 @@ const ControlePonto = () => {
   const [resolveJustificativa, setResolveJustificativa] = useState('');
   const [resolveError, setResolveError] = useState('');
   const [resolveSaving, setResolveSaving] = useState(false);
+
+  // Confirmação de exclusão dos lançamentos de ponto de um dia (a partir dos
+  // cards do Relatório). Guarda { userId, userName, date, dateLabel }.
+  const [confirmDeleteDia, setConfirmDeleteDia] = useState(null);
+  const [deletingDia, setDeletingDia] = useState(false);
   
   // Estado de carregamento inicial e mensagens de erro (inline, não usa alert)
   const [isLoading, setIsLoading] = useState(true);
@@ -1040,6 +1045,26 @@ const ControlePonto = () => {
       setResolveError('Erro ao salvar: ' + error.message);
     } finally {
       setResolveSaving(false);
+    }
+  };
+
+  // Exclui todos os lançamentos de ponto de um funcionário em um dia
+  // específico (chamado a partir do modal de confirmação nos cards do
+  // Relatório). Não mexe em atestado/férias/feriado do dia, só nas marcações.
+  const handleDeleteDayRecords = async () => {
+    if (!confirmDeleteDia) return;
+    setDeletingDia(true);
+    try {
+      await supabaseRequest('registros_ponto', 'DELETE', {
+        query: `?user_id=eq.${confirmDeleteDia.userId}&date=eq.${confirmDeleteDia.date}`
+      });
+      setTimeRecords(timeRecords.filter(r => !(r.userId === confirmDeleteDia.userId && r.date === confirmDeleteDia.date)));
+      setConfirmDeleteDia(null);
+    } catch (error) {
+      console.error('Erro ao excluir lançamentos do dia:', error);
+      alert('Não foi possível excluir: ' + error.message);
+    } finally {
+      setDeletingDia(false);
     }
   };
 
@@ -2315,7 +2340,27 @@ const ControlePonto = () => {
                                 )}
                               </div>
                             </div>
-                            <Edit2 className="w-4 h-4 text-gray-300 flex-shrink-0 mt-1" />
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              {dia.status !== 'sem-registro' && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setConfirmDeleteDia({
+                                      userId: reportUser,
+                                      userName: report.user.name,
+                                      date: dia.date,
+                                      dateLabel: `${diaSemana.nome}, ${formatDate(dia.date)}`,
+                                    });
+                                  }}
+                                  className="p-1 -m-1 text-gray-300 hover:text-red-500"
+                                  aria-label="Excluir lançamentos do dia"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              )}
+                              <Edit2 className="w-4 h-4 text-gray-300 mt-1" />
+                            </div>
                           </div>
 
                           {dia.status !== 'sem-registro' ? (
@@ -3194,6 +3239,39 @@ const ControlePonto = () => {
                   Isso substitui todos os lançamentos deste dia e marca como ajuste manual.
                 </p>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de confirmação de exclusão dos lançamentos de um dia */}
+      {confirmDeleteDia && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-sm">
+            <div className="p-6 text-center">
+              <div className="w-14 h-14 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Trash2 className="w-7 h-7 text-red-600" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 mb-2">Excluir lançamentos do dia?</h3>
+              <p className="text-gray-500 text-sm mb-6">
+                Todas as marcações de <strong>{confirmDeleteDia.userName}</strong> em <strong>{confirmDeleteDia.dateLabel}</strong> serão apagadas. Essa ação não pode ser desfeita.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setConfirmDeleteDia(null)}
+                  disabled={deletingDia}
+                  className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleDeleteDayRecords}
+                  disabled={deletingDia}
+                  className="flex-1 bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 transition-all disabled:opacity-50"
+                >
+                  {deletingDia ? 'Excluindo...' : 'Excluir'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
