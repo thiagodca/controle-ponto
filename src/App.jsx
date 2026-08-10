@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v6.11-observacoes-so-admin-corrigido';
+const APP_VERSION = 'v6.12-observacoes-restrita-atestado-feriado-ferias';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -795,9 +795,8 @@ const ControlePonto = () => {
   const generateReport = () => generateReportFor(reportUser, reportMonth, reportYear);
 
   // Gera e baixa um PDF do relatório mensal já calculado (report = retorno de generateReport()).
-  // incluirObservacoes: no relatório do admin a coluna Observações foi removida;
-  // no "Meu Espelho" do colaborador ela continua aparecendo.
-  const handleExportReportPDF = (report, mesStr, anoStr, incluirObservacoes = true) => {
+  // A coluna Observações traz somente atestado médico, feriado e férias.
+  const handleExportReportPDF = (report, mesStr, anoStr) => {
     const nomesMeses = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
     const nomeMes = nomesMeses[parseInt(mesStr)];
 
@@ -820,7 +819,12 @@ const ControlePonto = () => {
     const linhas = report.dias.map((dia) => {
       const diaSemana = getDiaSemana(dia.date);
 
-      const linha = [
+      const observacoes = [];
+      if (dia.temAtestado) observacoes.push(`Atestado ${dia.atestadoHoras}h`);
+      if (dia.isHoliday) observacoes.push('Feriado');
+      if (dia.isVacation) observacoes.push('Férias');
+
+      return [
         formatDate(dia.date),
         diaSemana.nome,
         formatHoraCurta(dia.entrada),
@@ -829,32 +833,17 @@ const ControlePonto = () => {
         formatHoraCurta(dia.saida),
         dia.status === 'incompleto' ? '—' : formatHoras(dia.horasTrabalhadas),
         dia.status === 'incompleto' ? '—' : formatHoras(dia.horasExtras),
+        observacoes.join(', '),
       ];
-
-      if (incluirObservacoes) {
-        const observacoes = [];
-        if (dia.isManuallyAdjusted) observacoes.push('Ajuste manual');
-        if (dia.temAtestado) observacoes.push(`Atestado ${dia.atestadoHoras}h`);
-        if (dia.isHoliday) observacoes.push('Feriado');
-        if (dia.isVacation) observacoes.push('Férias');
-        if (dia.status === 'incompleto') observacoes.push('Incompleto');
-        if (isDiaInconsistente(dia, diaSemana)) observacoes.push('Inconsistência');
-        linha.push(observacoes.join(', '));
-      }
-
-      return linha;
     });
-
-    const head = ['Data', 'Dia', 'Entrada', 'Início Int.', 'Fim Int.', 'Saída', 'Trabalhadas', 'Extras'];
-    if (incluirObservacoes) head.push('Observações');
 
     autoTable(doc, {
       startY: 46,
-      head: [head],
+      head: [['Data', 'Dia', 'Entrada', 'Início Int.', 'Fim Int.', 'Saída', 'Trabalhadas', 'Extras', 'Observações']],
       body: linhas,
       styles: { fontSize: 7.5, cellPadding: 2 },
       headStyles: { fillColor: [79, 70, 229] },
-      columnStyles: incluirObservacoes ? { 8: { cellWidth: 40 } } : {},
+      columnStyles: { 8: { cellWidth: 40 } },
       didParseCell: (data) => {
         // Destaca fins de semana em cinza claro
         if (data.section === 'body') {
@@ -2277,7 +2266,7 @@ const ControlePonto = () => {
                     <div className="flex items-start justify-between gap-2 mb-1">
                       <h3 className="text-xl font-bold">{report.user.name}</h3>
                       <button
-                        onClick={() => handleExportReportPDF(report, reportMonth, reportYear, false)}
+                        onClick={() => handleExportReportPDF(report, reportMonth, reportYear)}
                         className="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 transition-colors px-3 py-1.5 rounded-lg text-sm font-medium flex-shrink-0"
                       >
                         <Download className="w-4 h-4" />
