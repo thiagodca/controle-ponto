@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v6.14-abono-no-pdf';
+const APP_VERSION = 'v7.1-login-offline';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -46,7 +46,109 @@ const supabaseRequest = async (table, method = 'GET', { query = '', body = null 
   return text ? JSON.parse(text) : null;
 };
 
-// Conversores entre o formato do banco (snake_case) e o formato usado no app (camelCase)
+// ===== Suporte a modo offline =====
+// Chaves usadas no localStorage do dispositivo. O sufixo "_v1" existe para
+// facilitar uma futura migração de formato sem quebrar dados já salvos.
+const SESSION_STORAGE_KEY = 'ponto_session_v1';
+const SNAPSHOT_STORAGE_KEY = 'ponto_data_snapshot_v1';
+const OFFLINE_QUEUE_STORAGE_KEY = 'ponto_offline_queue_v1';
+const OFFLINE_CREDENTIALS_STORAGE_KEY = 'ponto_offline_credentials_v1';
+// Depois desse número de dias sem um login online neste aparelho, o login
+// offline deixa de funcionar — o usuário precisa se conectar uma vez para
+// "renovar" a credencial salva. Isso limita a janela de risco caso uma
+// senha seja trocada/revogada pelo admin enquanto o funcionário está offline.
+const OFFLINE_CREDENTIAL_TTL_DIAS = 14;
+
+const loadFromLocalStorage = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (error) {
+    console.warn(`Não foi possível ler "${key}" do armazenamento local:`, error.message);
+    return fallback;
+  }
+};
+
+const saveToLocalStorage = (key, value) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (error) {
+    // Provavelmente localStorage cheio ou bloqueado (modo anônimo/privado).
+    // Não bloqueia o app — só significa que o recurso offline fica limitado.
+    console.warn(`Não foi possível salvar "${key}" no armazenamento local:`, error.message);
+  }
+};
+
+const removeFromLocalStorage = (key) => {
+  try {
+    localStorage.removeItem(key);
+  } catch { /* ignora */ }
+};
+
+// ----- Hash de senha para login offline -----
+// A senha NUNCA é guardada em texto puro no aparelho — só um hash SHA-256
+// com salt aleatório, calculado pela própria Web Crypto API do navegador
+// (não depende de nenhuma lib externa, funciona em qualquer navegador
+// moderno servido por HTTPS, incluindo o PWA instalado no celular).
+const gerarSaltAleatorio = () => {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+};
+
+const calcularHash = async (texto, saltHex) => {
+  const encoder = new TextEncoder();
+  const dados = encoder.encode(`${saltHex}:${texto}`);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', dados);
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+};
+
+// Chamado depois de todo login online bem-sucedido: guarda (ou renova) o
+// hash da senha deste usuário neste aparelho, para permitir login offline
+// depois. Substitui qualquer credencial anterior salva para o mesmo e-mail.
+const salvarCredencialOffline = async (email, senha, userId) => {
+  try {
+    const salt = gerarSaltAleatorio();
+    const hash = await calcularHash(senha, salt);
+    const listaAtual = loadFromLocalStorage(OFFLINE_CREDENTIALS_STORAGE_KEY, []);
+    const semEstaConta = listaAtual.filter(c => c.email !== email);
+    saveToLocalStorage(OFFLINE_CREDENTIALS_STORAGE_KEY, [
+      ...semEstaConta,
+      { email, salt, hash, userId, cachedAt: new Date().toISOString() },
+    ]);
+  } catch (error) {
+    console.warn('Não foi possível salvar a credencial offline:', error.message);
+  }
+};
+
+// Remove a credencial offline salva para um e-mail (usado no logout, para
+// não deixar login offline disponível depois que o usuário saiu de propósito).
+const removerCredencialOffline = (email) => {
+  const listaAtual = loadFromLocalStorage(OFFLINE_CREDENTIALS_STORAGE_KEY, []);
+  saveToLocalStorage(OFFLINE_CREDENTIALS_STORAGE_KEY, listaAtual.filter(c => c.email !== email));
+};
+
+// Tenta autenticar localmente, sem rede, comparando o hash da senha digitada
+// com o hash salvo no aparelho. Retorna { ok, user? , motivo? }.
+const tentarLoginOffline = async (email, senha, usersEmMemoria) => {
+  const listaAtual = loadFromLocalStorage(OFFLINE_CREDENTIALS_STORAGE_KEY, []);
+  const credencial = listaAtual.find(c => c.email === email);
+  if (!credencial) return { ok: false, motivo: 'sem-credencial' };
+
+  const diasDesdeCache = (Date.now() - new Date(credencial.cachedAt).getTime()) / 86400000;
+  if (diasDesdeCache > OFFLINE_CREDENTIAL_TTL_DIAS) return { ok: false, motivo: 'expirada' };
+
+  const hashDigitado = await calcularHash(senha, credencial.salt);
+  if (hashDigitado !== credencial.hash) return { ok: false, motivo: 'senha-incorreta' };
+
+  const snapshot = loadFromLocalStorage(SNAPSHOT_STORAGE_KEY, null);
+  const listaUsuarios = (snapshot?.users?.length ? snapshot.users : usersEmMemoria) || [];
+  const usuario = listaUsuarios.find(u => u.id === credencial.userId);
+  if (!usuario) return { ok: false, motivo: 'usuario-nao-encontrado' };
+
+  return { ok: true, user: usuario };
+};
+
+
 const dbUserToApp = (u) => ({
   id: u.id,
   name: u.name,
@@ -136,9 +238,12 @@ const reverseGeocode = async (latitude, longitude) => {
 };
 
 const ControlePonto = () => {
-  // Estado para autenticação
-  const [currentUser, setCurrentUser] = useState(null);
-  const [showLogin, setShowLogin] = useState(true);
+  // Estado para autenticação. A sessão é restaurada do localStorage (ver
+  // useEffect logo abaixo) para permitir abrir o app já logado mesmo sem
+  // internet — sem isso, o funcionário ficaria travado na tela de login
+  // (que depende do banco) toda vez que abrisse o app offline.
+  const [currentUser, setCurrentUser] = useState(() => loadFromLocalStorage(SESSION_STORAGE_KEY, null));
+  const [showLogin, setShowLogin] = useState(() => !loadFromLocalStorage(SESSION_STORAGE_KEY, null));
   const [showPasswordSetup, setShowPasswordSetup] = useState(false);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -147,9 +252,22 @@ const ControlePonto = () => {
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
+  // Estado de conexão e ponto offline. "isOnline" reflete os eventos
+  // online/offline do navegador; "offlineQueue" guarda pontos batidos sem
+  // internet, ainda não enviados ao Supabase (persistido no localStorage
+  // para sobreviver a fechar o app/aba).
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [offlineQueue, setOfflineQueue] = useState(() => loadFromLocalStorage(OFFLINE_QUEUE_STORAGE_KEY, []));
+  const [isSyncingOffline, setIsSyncingOffline] = useState(false);
   
-  // Estado para navegação
-  const [activeView, setActiveView] = useState('clock');
+  // Estado para navegação — se a sessão foi restaurada do localStorage,
+  // já abre na tela principal do perfil (admin cai em "home", funcionário em "clock")
+  const [activeView, setActiveView] = useState(() => {
+    const sessao = loadFromLocalStorage(SESSION_STORAGE_KEY, null);
+    if (!sessao) return 'clock';
+    return sessao.profile === 'admin' ? 'home' : 'clock';
+  });
   
   // Estado para usuários
   const [users, setUsers] = useState([]);
@@ -238,47 +356,84 @@ const ControlePonto = () => {
     try {
       const usuarios = await supabaseRequest('usuarios', 'GET', { query: '?select=id,name,email,profile,first_access,created_at&order=created_at.asc' });
       const usuariosMapeados = (usuarios || []).map(dbUserToApp);
-      setUsers(usuariosMapeados);
 
       const registros = await supabaseRequest('registros_ponto', 'GET', { query: '?select=*&order=datetime.asc' });
-      setTimeRecords((registros || []).map(dbRecordToApp));
+      const registrosMapeados = (registros || []).map(dbRecordToApp);
 
       const feriadosDb = await supabaseRequest('feriados', 'GET', { query: '?select=*' });
-      setHolidays((feriadosDb || []).map(f => ({ date: f.date, description: f.description })));
+      const holidaysMapeados = (feriadosDb || []).map(f => ({ date: f.date, description: f.description }));
 
       const atestadosDb = await supabaseRequest('atestados', 'GET', { query: '?select=*' });
-      setMedicalCertificates((atestadosDb || []).map(a => ({
+      const atestadosMapeados = (atestadosDb || []).map(a => ({
         id: a.id, userId: a.user_id, date: a.date, hours: parseFloat(a.hours), justification: a.justification
-      })));
+      }));
 
       const abonosDb = await supabaseRequest('horas_abonadas', 'GET', { query: '?select=*' });
-      setExcusedHours((abonosDb || []).map(a => ({
+      const abonosMapeados = (abonosDb || []).map(a => ({
         id: a.id, userId: a.user_id, date: a.date, hours: parseFloat(a.hours), justification: a.justification
-      })));
+      }));
 
       const feriasDb = await supabaseRequest('ferias', 'GET', { query: '?select=*' });
-      setVacations((feriasDb || []).map(v => ({
+      const feriasMapeadas = (feriasDb || []).map(v => ({
         id: v.id,
         userId: v.user_id,
         userName: usuariosMapeados.find(u => u.id === v.user_id)?.name || '(usuário removido)',
         startDate: v.start_date,
         endDate: v.end_date,
-      })));
+      }));
 
       const alertasDb = await supabaseRequest('alertas_horas_extras', 'GET', { query: '?select=*' });
-      setOvertimeAlerts((alertasDb || []).map(a => ({
+      const overtimeAlertsMapeados = (alertasDb || []).map(a => ({
         id: a.id,
         userId: a.user_id,
         userName: usuariosMapeados.find(u => u.id === a.user_id)?.name || '(usuário removido)',
         type: a.type,
         thresholdHours: parseFloat(a.threshold_hours),
-      })));
+      }));
 
+      setUsers(usuariosMapeados);
+      setTimeRecords(registrosMapeados);
+      setHolidays(holidaysMapeados);
+      setMedicalCertificates(atestadosMapeados);
+      setExcusedHours(abonosMapeados);
+      setVacations(feriasMapeadas);
+      setOvertimeAlerts(overtimeAlertsMapeados);
       setStorageAvailable(true);
+
+      // Guarda uma cópia local de tudo, para permitir abrir o app e bater
+      // ponto mesmo sem internet mais tarde (ver "Ponto off-line").
+      saveToLocalStorage(SNAPSHOT_STORAGE_KEY, {
+        savedAt: new Date().toISOString(),
+        users: usuariosMapeados,
+        timeRecords: registrosMapeados,
+        holidays: holidaysMapeados,
+        medicalCertificates: atestadosMapeados,
+        excusedHours: abonosMapeados,
+        vacations: feriasMapeadas,
+        overtimeAlerts: overtimeAlertsMapeados,
+      });
     } catch (error) {
       console.error('Erro ao carregar dados do banco:', error);
-      setLoadError(error.message || 'Falha ao conectar com o banco de dados.');
-      setStorageAvailable(false);
+
+      // Provavelmente estamos offline. Se já existe uma cópia local salva de
+      // uma sincronização anterior, usa ela em vez de travar a tela — é o
+      // que permite o app funcionar (com dados possivelmente um pouco
+      // desatualizados) sem nenhuma conexão.
+      const snapshot = loadFromLocalStorage(SNAPSHOT_STORAGE_KEY, null);
+      if (snapshot) {
+        setUsers(snapshot.users || []);
+        setTimeRecords(snapshot.timeRecords || []);
+        setHolidays(snapshot.holidays || []);
+        setMedicalCertificates(snapshot.medicalCertificates || []);
+        setExcusedHours(snapshot.excusedHours || []);
+        setVacations(snapshot.vacations || []);
+        setOvertimeAlerts(snapshot.overtimeAlerts || []);
+        setStorageAvailable(true);
+        setLoadError('');
+      } else {
+        setLoadError(error.message || 'Falha ao conectar com o banco de dados.');
+        setStorageAvailable(false);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -298,6 +453,39 @@ const ControlePonto = () => {
     }
 
     setIsLoggingIn(true);
+
+    const efetuarLoginComUsuario = (user) => {
+      setCurrentUser(user);
+      saveToLocalStorage(SESSION_STORAGE_KEY, user);
+      setShowLogin(false);
+      setActiveView(user.profile === 'admin' ? 'home' : 'clock');
+      setLoginEmail('');
+      setLoginPassword('');
+    };
+
+    const mensagemFalhaOffline = (motivo) => {
+      if (motivo === 'expirada') {
+        return 'Faz mais de 14 dias que você não entra com internet neste aparelho. Conecte-se uma vez para continuar entrando offline.';
+      }
+      if (motivo === 'sem-credencial') {
+        return 'Sem conexão, e este aparelho ainda não tem um login salvo para este e-mail. É preciso se conectar à internet para o primeiro login.';
+      }
+      return 'E-mail ou senha incorretos.';
+    };
+
+    // Sem conexão: nem tenta o servidor (só perderia tempo até dar timeout)
+    // — vai direto para a verificação local por hash.
+    if (!navigator.onLine) {
+      const resultadoOffline = await tentarLoginOffline(emailNormalizado, senhaDigitada, users);
+      setIsLoggingIn(false);
+      if (resultadoOffline.ok) {
+        efetuarLoginComUsuario(resultadoOffline.user);
+      } else {
+        setLoginError(mensagemFalhaOffline(resultadoOffline.motivo));
+      }
+      return;
+    }
+
     try {
       const resultado = await supabaseRequest('rpc/verify_login', 'POST', {
         body: { p_email: emailNormalizado, p_password: senhaDigitada }
@@ -313,18 +501,25 @@ const ControlePonto = () => {
           setShowPasswordSetup(true);
           setLoginPassword(''); // Limpa apenas a senha
         } else {
-          setCurrentUser(user);
-          setShowLogin(false);
-          setActiveView(user.profile === 'admin' ? 'home' : 'clock');
-          setLoginEmail('');
-          setLoginPassword('');
+          // Login online OK: guarda/renova o hash local, para permitir
+          // login offline neste mesmo aparelho depois.
+          await salvarCredencialOffline(emailNormalizado, senhaDigitada, user.id);
+          efetuarLoginComUsuario(user);
         }
       } else {
         setLoginError('E-mail ou senha incorretos. Verifique e tente novamente.');
       }
     } catch (error) {
-      console.error('Erro no login:', error);
-      setLoginError('Erro inesperado ao entrar: ' + error.message);
+      // A conexão pode ter caído bem na hora do login (navigator.onLine
+      // pode acusar "online" mesmo sem internet de verdade). Antes de
+      // desistir, tenta o fallback offline por hash local.
+      console.warn('Login online falhou, tentando fallback offline:', error.message);
+      const resultadoOffline = await tentarLoginOffline(emailNormalizado, senhaDigitada, users);
+      if (resultadoOffline.ok) {
+        efetuarLoginComUsuario(resultadoOffline.user);
+      } else {
+        setLoginError('Erro ao entrar (sem conexão com o servidor): ' + error.message);
+      }
     } finally {
       setIsLoggingIn(false);
     }
@@ -365,6 +560,8 @@ const ControlePonto = () => {
 
       setUsers(users.map(u => u.id === userAtualizado.id ? userAtualizado : u));
       setCurrentUser(userAtualizado);
+      saveToLocalStorage(SESSION_STORAGE_KEY, userAtualizado);
+      await salvarCredencialOffline(emailNormalizado, newPassword, userAtualizado.id);
       setShowPasswordSetup(false);
       setShowLogin(false);
       setActiveView(userAtualizado.profile === 'admin' ? 'home' : 'clock');
@@ -379,7 +576,13 @@ const ControlePonto = () => {
 
   // Função de logout
   const handleLogout = () => {
+    // Sair de propósito também revoga o login offline salvo neste aparelho
+    // — quem quiser voltar a usar offline precisa entrar de novo com internet.
+    if (currentUser?.email) {
+      removerCredencialOffline(String(currentUser.email).trim().toLowerCase());
+    }
     setCurrentUser(null);
+    removeFromLocalStorage(SESSION_STORAGE_KEY);
     setShowLogin(true);
     setActiveView('clock');
     setLoginError('');
@@ -580,11 +783,113 @@ const ControlePonto = () => {
     }
 
     setClockModalPosition(position);
+
+    if (!navigator.onLine) {
+      // Sem conexão: não adianta tentar o Nominatim (vai só demorar até
+      // falhar). Segue direto para a confirmação, só com as coordenadas.
+      setClockModalAddress(null);
+      setClockModalStatus('ready');
+      return;
+    }
+
     setClockModalStatus('geocoding');
     const endereco = await reverseGeocode(position.latitude, position.longitude);
     setClockModalAddress(endereco);
     setClockModalStatus('ready');
   };
+
+  // Guarda um ponto localmente quando não há como enviar ao Supabase agora
+  // (sem internet, ou a conexão caiu bem na hora de enviar). O localId
+  // evita duplicar o registro se a sincronização for tentada mais de uma vez.
+  const enqueueOfflinePunch = (registro) => {
+    const item = { ...registro, localId: `local-${Date.now()}-${Math.random().toString(36).slice(2, 9)}` };
+    const filaAtual = loadFromLocalStorage(OFFLINE_QUEUE_STORAGE_KEY, []);
+    const novaFila = [...filaAtual, item];
+    setOfflineQueue(novaFila);
+    saveToLocalStorage(OFFLINE_QUEUE_STORAGE_KEY, novaFila);
+    return item;
+  };
+
+  // Envia a fila de pontos offline para o Supabase, um por vez, na ordem em
+  // que foram batidos. Se algum falhar (provavelmente a conexão caiu de
+  // novo no meio do processo), para por ali — os restantes continuam na
+  // fila e a sincronização é tentada de novo mais tarde, sem duplicar nada.
+  const syncOfflineQueue = async () => {
+    const fila = loadFromLocalStorage(OFFLINE_QUEUE_STORAGE_KEY, []);
+    if (fila.length === 0) return;
+
+    setIsSyncingOffline(true);
+    const idsEnviados = [];
+
+    for (const item of fila) {
+      try {
+        let address = item.address;
+        if (!address && navigator.onLine) {
+          address = await reverseGeocode(item.latitude, item.longitude);
+        }
+        const inseridos = await supabaseRequest('registros_ponto', 'POST', {
+          body: {
+            user_id: item.userId,
+            user_name: item.userName,
+            date: item.date,
+            time: item.time,
+            datetime: item.datetime,
+            type: item.type,
+            latitude: item.latitude,
+            longitude: item.longitude,
+            address,
+          }
+        });
+        idsEnviados.push(item.localId);
+        const novoRegistro = dbRecordToApp(inseridos[0]);
+        setTimeRecords(prev => [...prev, novoRegistro]);
+      } catch (error) {
+        console.warn('Falha ao sincronizar ponto offline, tenta de novo mais tarde:', error.message);
+        break; // preserva a ordem: interrompe e tenta tudo de novo depois
+      }
+    }
+
+    if (idsEnviados.length > 0) {
+      const filaRestante = fila.filter(item => !idsEnviados.includes(item.localId));
+      setOfflineQueue(filaRestante);
+      saveToLocalStorage(OFFLINE_QUEUE_STORAGE_KEY, filaRestante);
+    }
+
+    setIsSyncingOffline(false);
+  };
+
+  // Detecta quando a conexão volta/cai, para atualizar o indicador visual e
+  // disparar a sincronização automaticamente.
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Sincroniza assim que a conexão volta...
+  useEffect(() => {
+    if (isOnline && offlineQueue.length > 0 && !isSyncingOffline) {
+      syncOfflineQueue();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOnline]);
+
+  // ...e também tenta periodicamente, como reforço — o evento "online" do
+  // navegador nem sempre dispara de forma confiável em todos os aparelhos.
+  useEffect(() => {
+    const intervalo = setInterval(() => {
+      if (offlineQueue.length > 0 && !isSyncingOffline) {
+        syncOfflineQueue();
+      }
+    }, 30000);
+    return () => clearInterval(intervalo);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offlineQueue.length, isSyncingOffline]);
 
   const handleCloseClockModal = () => {
     setClockModalOpen(false);
@@ -595,30 +900,53 @@ const ControlePonto = () => {
   };
 
   // Executa de fato o registro do ponto — só é chamado depois que o usuário
-  // confirma no modal, com o mapa já carregado.
+  // confirma no modal, com o mapa (ou as coordenadas, se offline) já prontos.
   const handleConfirmClockIn = async () => {
     if (!currentUser || !clockModalPosition) return;
     setIsConfirmingClockIn(true);
 
     const now = new Date();
     const today = now.toISOString().split('T')[0];
-    const todayRecords = timeRecords.filter(r => 
-      r.userId === currentUser.id && r.date === today
-    );
-    const type = todayRecords.length % 2 === 0 ? 'entrada' : 'saída';
+    // Conta tanto os registros já sincronizados quanto os que estão na fila
+    // offline de hoje, para saber corretamente se a próxima marcação é
+    // entrada ou saída mesmo sem conexão.
+    const todaySynced = timeRecords.filter(r => r.userId === currentUser.id && r.date === today);
+    const todayQueued = offlineQueue.filter(r => r.userId === currentUser.id && r.date === today);
+    const type = (todaySynced.length + todayQueued.length) % 2 === 0 ? 'entrada' : 'saída';
+
+    const registroBase = {
+      userId: currentUser.id,
+      userName: currentUser.name,
+      date: today,
+      time: now.toTimeString().split(' ')[0],
+      datetime: now.toISOString(),
+      type,
+      latitude: clockModalPosition.latitude,
+      longitude: clockModalPosition.longitude,
+      address: clockModalAddress,
+    };
+
+    if (!navigator.onLine) {
+      enqueueOfflinePunch(registroBase);
+      setClockMessage({ text: `📵 Ponto registrado offline: ${type.toUpperCase()} às ${registroBase.time}. Será sincronizado quando a internet voltar.`, error: false });
+      handleCloseClockModal();
+      setIsConfirmingClockIn(false);
+      setTimeout(() => setClockMessage(null), 6000);
+      return;
+    }
 
     try {
       const inseridos = await supabaseRequest('registros_ponto', 'POST', {
         body: {
-          user_id: currentUser.id,
-          user_name: currentUser.name,
-          date: today,
-          time: now.toTimeString().split(' ')[0],
-          datetime: now.toISOString(),
-          type,
-          latitude: clockModalPosition.latitude,
-          longitude: clockModalPosition.longitude,
-          address: clockModalAddress,
+          user_id: registroBase.userId,
+          user_name: registroBase.userName,
+          date: registroBase.date,
+          time: registroBase.time,
+          datetime: registroBase.datetime,
+          type: registroBase.type,
+          latitude: registroBase.latitude,
+          longitude: registroBase.longitude,
+          address: registroBase.address,
         }
       });
       const novoRegistro = dbRecordToApp(inseridos[0]);
@@ -627,14 +955,18 @@ const ControlePonto = () => {
       setClockMessage({ text: `Ponto registrado: ${type.toUpperCase()} às ${novoRegistro.time}${avisoEndereco}`, error: false });
       handleCloseClockModal();
     } catch (error) {
-      console.error('Erro ao salvar registro de ponto:', error);
-      setClockMessage({ text: 'Erro ao salvar o ponto: ' + error.message, error: true });
+      // A conexão provavelmente caiu bem na hora de enviar (diferente de um
+      // erro real do servidor). Em vez de bloquear o funcionário, guarda
+      // localmente e sincroniza depois — mesmo comportamento do offline.
+      console.warn('Falha ao enviar o ponto (guardando para sincronizar depois):', error.message);
+      enqueueOfflinePunch(registroBase);
+      setClockMessage({ text: `📵 Sem conexão no envio. Ponto registrado offline: ${type.toUpperCase()} às ${registroBase.time}. Será sincronizado automaticamente.`, error: false });
       handleCloseClockModal();
     } finally {
       setIsConfirmingClockIn(false);
     }
 
-    setTimeout(() => setClockMessage(null), 5000);
+    setTimeout(() => setClockMessage(null), 6000);
   };
 
   // Converte "HH:MM:SS" em minutos desde a meia-noite, para facilitar cálculos
@@ -1766,6 +2098,17 @@ const ControlePonto = () => {
         </div>
       </header>
 
+      {/* Faixa de status offline — some sozinha quando volta a conexão e não há mais nada pendente */}
+      {(!isOnline || offlineQueue.length > 0) && (
+        <div className={`text-center text-xs sm:text-sm font-medium py-1.5 px-3 ${!isOnline ? 'bg-amber-500 text-white' : 'bg-blue-500 text-white'}`}>
+          {!isOnline
+            ? `📵 Sem conexão${offlineQueue.length > 0 ? ` — ${offlineQueue.length} registro(s) pendente(s)` : ''}`
+            : isSyncingOffline
+              ? 'Sincronizando registros pendentes...'
+              : `${offlineQueue.length} registro(s) pendente(s) de sincronização`}
+        </div>
+      )}
+
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pb-24">
         
@@ -1810,24 +2153,40 @@ const ControlePonto = () => {
                 <div className="mt-6 sm:mt-8">
                   <h3 className="text-base sm:text-lg font-semibold text-gray-800 mb-3 sm:mb-4">Registros de Hoje</h3>
                   <div className="space-y-2">
-                    {currentUser && timeRecords
-                      .filter(r => r.userId === currentUser.id && r.date === new Date().toISOString().split('T')[0])
+                    {currentUser && [
+                      ...timeRecords
+                        .filter(r => r.userId === currentUser.id && r.date === new Date().toISOString().split('T')[0])
+                        .map(r => ({ ...r, pendente: false })),
+                      ...offlineQueue
+                        .filter(r => r.userId === currentUser.id && r.date === new Date().toISOString().split('T')[0])
+                        .map(r => ({ ...r, id: r.localId, pendente: true })),
+                    ]
                       .sort((a, b) => new Date(a.datetime) - new Date(b.datetime))
                       .map(record => (
-                        <div key={record.id} className="p-3 sm:p-4 bg-gray-50 rounded-lg">
+                        <div key={record.id} className={`p-3 sm:p-4 rounded-lg ${record.pendente ? 'bg-amber-50 border border-amber-200' : 'bg-gray-50'}`}>
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-3">
                               <div className={`w-3 h-3 rounded-full ${record.type === 'entrada' ? 'bg-green-500' : 'bg-red-500'}`}></div>
                               <span className="font-semibold text-gray-700 capitalize">{record.type}</span>
+                              {record.pendente && (
+                                <span className="text-[10px] font-bold uppercase tracking-wide bg-amber-200 text-amber-800 px-1.5 py-0.5 rounded">
+                                  Pendente
+                                </span>
+                              )}
                             </div>
                             <span className="text-gray-600 font-mono">{record.time}</span>
                           </div>
                           {record.address && (
                             <p className="text-xs text-gray-500 mt-1 pl-6">📍 {record.address}</p>
                           )}
+                          {record.pendente && (
+                            <p className="text-xs text-amber-600 mt-1 pl-6">Aguardando conexão para sincronizar</p>
+                          )}
                         </div>
                       ))}
-                    {currentUser && timeRecords.filter(r => r.userId === currentUser.id && r.date === new Date().toISOString().split('T')[0]).length === 0 && (
+                    {currentUser &&
+                      timeRecords.filter(r => r.userId === currentUser.id && r.date === new Date().toISOString().split('T')[0]).length === 0 &&
+                      offlineQueue.filter(r => r.userId === currentUser.id && r.date === new Date().toISOString().split('T')[0]).length === 0 && (
                       <p className="text-gray-500 text-center py-4">Nenhum registro hoje</p>
                     )}
                   </div>
@@ -3508,33 +3867,49 @@ const ControlePonto = () => {
 
               {(clockModalStatus === 'geocoding' || clockModalStatus === 'ready') && clockModalPosition && (
                 <div>
-                  <div className="rounded-xl overflow-hidden border border-gray-200 mb-4" style={{ height: '260px' }}>
-                    <MapContainer
-                      center={[clockModalPosition.latitude, clockModalPosition.longitude]}
-                      zoom={17}
-                      style={{ height: '100%', width: '100%' }}
-                      dragging={false}
-                      zoomControl={false}
-                      scrollWheelZoom={false}
-                      doubleClickZoom={false}
-                      touchZoom={false}
-                      attributionControl={false}
-                    >
-                      <TileLayer
-                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                      />
-                      <Marker
-                        position={[clockModalPosition.latitude, clockModalPosition.longitude]}
-                        icon={marcadorIcon}
-                      />
-                    </MapContainer>
-                  </div>
+                  {isOnline ? (
+                    <div className="rounded-xl overflow-hidden border border-gray-200 mb-4" style={{ height: '260px' }}>
+                      <MapContainer
+                        center={[clockModalPosition.latitude, clockModalPosition.longitude]}
+                        zoom={17}
+                        style={{ height: '100%', width: '100%' }}
+                        dragging={false}
+                        zoomControl={false}
+                        scrollWheelZoom={false}
+                        doubleClickZoom={false}
+                        touchZoom={false}
+                        attributionControl={false}
+                      >
+                        <TileLayer
+                          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                        />
+                        <Marker
+                          position={[clockModalPosition.latitude, clockModalPosition.longitude]}
+                          icon={marcadorIcon}
+                        />
+                      </MapContainer>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 mb-4 p-4 text-center" style={{ minHeight: '140px' }}>
+                      <p className="text-amber-800 text-sm font-semibold mb-1">📵 Sem conexão</p>
+                      <p className="text-amber-700 text-xs mb-3">
+                        O mapa não carrega offline, mas sua localização foi capturada normalmente pelo GPS:
+                      </p>
+                      <p className="text-amber-900 text-xs font-mono bg-white/60 rounded-lg py-2 px-3 inline-block">
+                        {clockModalPosition.latitude.toFixed(6)}, {clockModalPosition.longitude.toFixed(6)}
+                      </p>
+                    </div>
+                  )}
 
                   <div className="bg-gray-50 rounded-lg p-3 mb-4 min-h-[3.5rem] flex items-center">
                     {clockModalStatus === 'geocoding' ? (
                       <p className="text-gray-500 text-sm flex items-center gap-2">
                         <span className="inline-block w-4 h-4 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin"></span>
                         Identificando endereço...
+                      </p>
+                    ) : !isOnline ? (
+                      <p className="text-amber-700 text-sm">
+                        📵 Este ponto será registrado agora no seu aparelho e enviado automaticamente quando a internet voltar.
                       </p>
                     ) : (
                       <p className="text-gray-700 text-sm">
