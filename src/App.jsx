@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v7.2-instalar-app';
+const APP_VERSION = 'v7.3-remove-instalar-app';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -260,16 +260,6 @@ const ControlePonto = () => {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [offlineQueue, setOfflineQueue] = useState(() => loadFromLocalStorage(OFFLINE_QUEUE_STORAGE_KEY, []));
   const [isSyncingOffline, setIsSyncingOffline] = useState(false);
-
-  // Estado do "instalar como app" (atalho na tela inicial). No Android/
-  // Chrome/Edge, o navegador dispara um evento (beforeinstallprompt) que
-  // guardamos aqui para acionar depois com um clique do usuário. No iOS
-  // (Safari) esse evento não existe — lá mostramos uma instrução manual.
-  const [installPromptEvent, setInstallPromptEvent] = useState(null);
-  const [isAppInstalled, setIsAppInstalled] = useState(() =>
-    window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true
-  );
-  const isIOSDevice = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
 
   // Estado para navegação — se a sessão foi restaurada do localStorage,
   // já abre na tela principal do perfil (admin cai em "home", funcionário em "clock")
@@ -880,36 +870,6 @@ const ControlePonto = () => {
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
-
-  // Captura o prompt de instalação do PWA (Chrome/Android/Edge). O
-  // navegador dispara esse evento sozinho quando julga o app "instalável" —
-  // só precisamos guardá-lo para acionar depois, num clique do usuário
-  // (não pode ser disparado programaticamente sem gesto do usuário).
-  useEffect(() => {
-    const handleBeforeInstallPrompt = (event) => {
-      event.preventDefault();
-      setInstallPromptEvent(event);
-    };
-    const handleAppInstalled = () => {
-      setInstallPromptEvent(null);
-      setIsAppInstalled(true);
-    };
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    window.addEventListener('appinstalled', handleAppInstalled);
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-      window.removeEventListener('appinstalled', handleAppInstalled);
-    };
-  }, []);
-
-  const handleInstallClick = async () => {
-    if (!installPromptEvent) return;
-    installPromptEvent.prompt();
-    await installPromptEvent.userChoice;
-    // Independente da escolha, o mesmo evento não pode ser reusado —
-    // o navegador só dispara um novo se ficar instalável de novo.
-    setInstallPromptEvent(null);
-  };
 
   // Sincroniza assim que a conexão volta...
   useEffect(() => {
@@ -2025,23 +1985,6 @@ const ControlePonto = () => {
                 <div className="mt-4 pt-4 border-t border-gray-200 text-center text-xs text-gray-500">
                   <p>Primeiro acesso? Use a senha padrão: <strong>123456</strong></p>
                 </div>
-
-                {!isAppInstalled && installPromptEvent && (
-                  <div className="mt-3">
-                    <button
-                      onClick={handleInstallClick}
-                      className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold border border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition-colors"
-                    >
-                      <Download className="w-4 h-4" />
-                      Instalar app na tela inicial
-                    </button>
-                  </div>
-                )}
-                {!isAppInstalled && !installPromptEvent && isIOSDevice && (
-                  <div className="mt-3 text-center text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
-                    Para instalar: toque em <strong>Compartilhar</strong> (o ícone com a seta) e depois em <strong>"Adicionar à Tela de Início"</strong>.
-                  </div>
-                )}
               </div>
             ) : (
               <div className="p-6">
@@ -2163,20 +2106,6 @@ const ControlePonto = () => {
             : isSyncingOffline
               ? 'Sincronizando registros pendentes...'
               : `${offlineQueue.length} registro(s) pendente(s) de sincronização`}
-        </div>
-      )}
-
-      {/* Faixa de "instalar app" — só aparece se o navegador oferecer a opção e ainda não estiver instalado */}
-      {!isAppInstalled && installPromptEvent && (
-        <div className="bg-indigo-50 border-b border-indigo-100 px-3 py-2 flex items-center justify-center gap-3 text-sm">
-          <span className="text-indigo-800">Instale o app na tela inicial para acesso mais rápido, inclusive offline.</span>
-          <button
-            onClick={handleInstallClick}
-            className="flex-shrink-0 flex items-center gap-1 bg-indigo-600 text-white px-3 py-1.5 rounded-lg font-semibold hover:bg-indigo-700 transition-colors"
-          >
-            <Download className="w-3.5 h-3.5" />
-            Instalar
-          </button>
         </div>
       )}
 
