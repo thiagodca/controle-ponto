@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree, Home, CalendarClock, Eye, EyeOff, HandCoins } from 'lucide-react';
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import L from 'leaflet';
@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v7.3-remove-instalar-app';
+const APP_VERSION = 'v7.4-fix-duplo-envio-ponto';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -746,11 +746,19 @@ const ControlePonto = () => {
   const [clockModalAddress, setClockModalAddress] = useState(null);
   const [clockModalErrorMsg, setClockModalErrorMsg] = useState('');
   const [isConfirmingClockIn, setIsConfirmingClockIn] = useState(false);
+  // Trava contra clique duplo/reenvio: usa useRef (não state) de propósito,
+  // porque precisa valer IMEDIATAMENTE, sem esperar o próximo render — um
+  // state comum poderia deixar uma janela de corrida se o usuário tocar em
+  // "Registrar Ponto" de novo enquanto o envio anterior ainda está no ar
+  // (ex: conexão lenta), fazendo os dois cliques calcularem "entrada" ao
+  // mesmo tempo achando que são o primeiro do dia.
+  const punchInFlightRef = useRef(false);
 
   // Ao tocar em "Registrar Ponto": abre o modal e começa o processo de obter
   // a localização. O registro só é efetivado quando o usuário confirmar,
   // depois do mapa ter carregado — nunca automaticamente.
   const handleOpenClockModal = async () => {
+    if (punchInFlightRef.current) return; // já tem um ponto sendo enviado — ignora
     setClockModalOpen(true);
     setClockModalPosition(null);
     setClockModalAddress(null);
@@ -814,9 +822,21 @@ const ControlePonto = () => {
   // que foram batidos. Se algum falhar (provavelmente a conexão caiu de
   // novo no meio do processo), para por ali — os restantes continuam na
   // fila e a sincronização é tentada de novo mais tarde, sem duplicar nada.
+  // Mesma lógica de trava por useRef do punchInFlightRef: evita que os dois
+  // gatilhos de sincronização (evento 'online' + verificação a cada 30s)
+  // rodem ao mesmo tempo, o que também poderia duplicar/atropelar o cálculo
+  // de tipo entrada/saída se dois pontos da fila fossem enviados em paralelo.
+  const syncInFlightRef = useRef(false);
+
   const syncOfflineQueue = async () => {
+    if (syncInFlightRef.current) return;
+    syncInFlightRef.current = true;
+
     const fila = loadFromLocalStorage(OFFLINE_QUEUE_STORAGE_KEY, []);
-    if (fila.length === 0) return;
+    if (fila.length === 0) {
+      syncInFlightRef.current = false;
+      return;
+    }
 
     setIsSyncingOffline(true);
     const idsEnviados = [];
@@ -856,6 +876,7 @@ const ControlePonto = () => {
     }
 
     setIsSyncingOffline(false);
+    syncInFlightRef.current = false;
   };
 
   // Detecta quando a conexão volta/cai, para atualizar o indicador visual e
@@ -903,6 +924,8 @@ const ControlePonto = () => {
   // confirma no modal, com o mapa (ou as coordenadas, se offline) já prontos.
   const handleConfirmClockIn = async () => {
     if (!currentUser || !clockModalPosition) return;
+    if (punchInFlightRef.current) return; // proteção extra contra duplo clique no botão do modal
+    punchInFlightRef.current = true;
     setIsConfirmingClockIn(true);
 
     const now = new Date();
@@ -931,6 +954,7 @@ const ControlePonto = () => {
       setClockMessage({ text: `📵 Ponto registrado offline: ${type.toUpperCase()} às ${registroBase.time}. Será sincronizado quando a internet voltar.`, error: false });
       handleCloseClockModal();
       setIsConfirmingClockIn(false);
+      punchInFlightRef.current = false;
       setTimeout(() => setClockMessage(null), 6000);
       return;
     }
@@ -964,6 +988,7 @@ const ControlePonto = () => {
       handleCloseClockModal();
     } finally {
       setIsConfirmingClockIn(false);
+      punchInFlightRef.current = false;
     }
 
     setTimeout(() => setClockMessage(null), 6000);
@@ -2135,9 +2160,10 @@ const ControlePonto = () => {
               <div className="p-5 sm:p-8">
                 <button
                   onClick={handleOpenClockModal}
-                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-5 sm:py-6 rounded-xl font-bold text-lg sm:text-xl hover:from-indigo-700 hover:to-purple-700 transition-all active:scale-95 shadow-lg"
+                  disabled={isConfirmingClockIn}
+                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-5 sm:py-6 rounded-xl font-bold text-lg sm:text-xl hover:from-indigo-700 hover:to-purple-700 transition-all active:scale-95 shadow-lg disabled:opacity-60 disabled:pointer-events-none"
                 >
-                  REGISTRAR PONTO
+                  {isConfirmingClockIn ? 'REGISTRANDO...' : 'REGISTRAR PONTO'}
                 </button>
                 
                 {clockMessage && (
