@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v7.4-fix-duplo-envio-ponto';
+const APP_VERSION = 'v7.5-fix-tipo-ponto-offline';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -146,6 +146,22 @@ const tentarLoginOffline = async (email, senha, usersEmMemoria) => {
   if (!usuario) return { ok: false, motivo: 'usuario-nao-encontrado' };
 
   return { ok: true, user: usuario };
+};
+
+// Mantém o snapshot local (usado como fallback quando o app abre offline)
+// em dia com pontos recém-registrados — tanto os que sincronizam na hora
+// quanto os que vêm da fila offline mais tarde. Sem isso, um ponto batido
+// e sincronizado com sucesso só entraria na cópia local no próximo
+// carregamento completo (loadData), deixando uma janela em que um
+// recarregamento offline "esqueceria" desse ponto para efeito de decidir
+// se a próxima marcação é entrada ou saída.
+const atualizarSnapshotComNovoRegistro = (novoRegistro) => {
+  const snapshot = loadFromLocalStorage(SNAPSHOT_STORAGE_KEY, null);
+  if (!snapshot) return; // ainda não existe nenhuma cópia local — nada a atualizar aqui
+  saveToLocalStorage(SNAPSHOT_STORAGE_KEY, {
+    ...snapshot,
+    timeRecords: [...(snapshot.timeRecords || []), novoRegistro],
+  });
 };
 
 
@@ -863,6 +879,7 @@ const ControlePonto = () => {
         idsEnviados.push(item.localId);
         const novoRegistro = dbRecordToApp(inseridos[0]);
         setTimeRecords(prev => [...prev, novoRegistro]);
+        atualizarSnapshotComNovoRegistro(novoRegistro);
       } catch (error) {
         console.warn('Falha ao sincronizar ponto offline, tenta de novo mais tarde:', error.message);
         break; // preserva a ordem: interrompe e tenta tudo de novo depois
@@ -933,8 +950,16 @@ const ControlePonto = () => {
     // Conta tanto os registros já sincronizados quanto os que estão na fila
     // offline de hoje, para saber corretamente se a próxima marcação é
     // entrada ou saída mesmo sem conexão.
+    //
+    // IMPORTANTE: a fila offline é lida direto do localStorage (não do
+    // estado `offlineQueue` do React) porque é a única fonte 100% confiável
+    // aqui — se a página recarregar entre duas marcações offline (comum no
+    // Safari ao sair do app pra ativar o modo avião e voltar), o estado em
+    // memória é reconstruído do zero e pode, em teoria, ficar um instante
+    // dessincronizado; o localStorage nunca fica.
     const todaySynced = timeRecords.filter(r => r.userId === currentUser.id && r.date === today);
-    const todayQueued = offlineQueue.filter(r => r.userId === currentUser.id && r.date === today);
+    const filaOfflineAtual = loadFromLocalStorage(OFFLINE_QUEUE_STORAGE_KEY, []);
+    const todayQueued = filaOfflineAtual.filter(r => r.userId === currentUser.id && r.date === today);
     const type = (todaySynced.length + todayQueued.length) % 2 === 0 ? 'entrada' : 'saída';
 
     const registroBase = {
@@ -975,6 +1000,7 @@ const ControlePonto = () => {
       });
       const novoRegistro = dbRecordToApp(inseridos[0]);
       setTimeRecords([...timeRecords, novoRegistro]);
+      atualizarSnapshotComNovoRegistro(novoRegistro);
       const avisoEndereco = clockModalAddress ? '' : ' (endereço não identificado)';
       setClockMessage({ text: `Ponto registrado: ${type.toUpperCase()} às ${novoRegistro.time}${avisoEndereco}`, error: false });
       handleCloseClockModal();
