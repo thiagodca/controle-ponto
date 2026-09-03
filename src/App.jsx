@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree, Home, CalendarClock, Eye, EyeOff, HandCoins } from 'lucide-react';
+import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree, Home, CalendarClock, Eye, EyeOff, HandCoins, ClipboardList, CheckCircle2, XCircle, Hourglass } from 'lucide-react';
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v7.5-fix-tipo-ponto-offline';
+const APP_VERSION = 'v7.6-correcao-inconsistencia-funcionario';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -188,6 +188,23 @@ const dbRecordToApp = (r) => ({
   adjustmentReason: r.adjustment_reason || null,
 });
 
+// Mapeia uma correção de inconsistência proposta pelo funcionário (linha da
+// tabela correcoes_pendentes) para o formato usado no estado do app.
+const dbCorrecaoToApp = (c) => ({
+  id: c.id,
+  userId: c.user_id,
+  date: c.date,
+  entrada: c.entrada,
+  inicioIntervalo: c.inicio_intervalo,
+  fimIntervalo: c.fim_intervalo,
+  saida: c.saida,
+  justification: c.justification,
+  status: c.status, // 'pendente' | 'aprovado' | 'rejeitado'
+  rejectionReason: c.rejection_reason,
+  createdAt: c.created_at,
+  resolvedAt: c.resolved_at,
+});
+
 // Obtém a localização atual do navegador (com timeout) e retorna coordenadas.
 // Se a pessoa negar a permissão ou o dispositivo não suportar, retorna null
 // em vez de travar o registro de ponto — a localização é um "extra", não deve
@@ -300,6 +317,7 @@ const ControlePonto = () => {
   const [holidays, setHolidays] = useState([]); // array de {date, description}
   const [medicalCertificates, setMedicalCertificates] = useState([]); // [{id, userId, date, hours, justification}]
   const [excusedHours, setExcusedHours] = useState([]); // [{id, userId, date, hours, justification}] — horas abonadas
+  const [correcoesPendentes, setCorrecoesPendentes] = useState([]); // [{id, userId, date, entrada, inicioIntervalo, fimIntervalo, saida, justification, status, rejectionReason, createdAt, resolvedAt}] — correções de inconsistência propostas pelo funcionário, aguardando aprovação do admin
   const [vacations, setVacations] = useState([]); // [{id, userId, userName, startDate, endDate}]
   const [overtimeAlerts, setOvertimeAlerts] = useState([]); // [{id, userId, userName, type, thresholdHours}]
   
@@ -341,6 +359,28 @@ const ControlePonto = () => {
   // cards do Relatório). Guarda { userId, userName, date, dateLabel }.
   const [confirmDeleteDia, setConfirmDeleteDia] = useState(null);
   const [deletingDia, setDeletingDia] = useState(false);
+
+  // Estado para a tela "Minhas Pendências" (funcionário corrige as próprias
+  // inconsistências de horário, ficando pendente de aprovação do admin)
+  const [pendingMonth, setPendingMonth] = useState(String(nowParaDefaults.getMonth() + 1).padStart(2, '0'));
+  const [pendingYear, setPendingYear] = useState(String(nowParaDefaults.getFullYear()));
+  const [myCorrectionModalOpen, setMyCorrectionModalOpen] = useState(false);
+  const [myCorrectionDate, setMyCorrectionDate] = useState('');
+  const [myCorrectionOriginalDia, setMyCorrectionOriginalDia] = useState(null);
+  const [myCorrectionEntrada, setMyCorrectionEntrada] = useState('');
+  const [myCorrectionInicioIntervalo, setMyCorrectionInicioIntervalo] = useState('');
+  const [myCorrectionFimIntervalo, setMyCorrectionFimIntervalo] = useState('');
+  const [myCorrectionSaida, setMyCorrectionSaida] = useState('');
+  const [myCorrectionJustificativa, setMyCorrectionJustificativa] = useState('');
+  const [myCorrectionError, setMyCorrectionError] = useState('');
+  const [myCorrectionSaving, setMyCorrectionSaving] = useState(false);
+  const [myCorrectionExistente, setMyCorrectionExistente] = useState(null); // correção já enviada antes para este dia (ex: rejeitada), se houver
+
+  // Estado do modal de rejeição de uma correção enviada pelo funcionário (admin)
+  const [rejectingCorrecao, setRejectingCorrecao] = useState(null);
+  const [rejectMotivo, setRejectMotivo] = useState('');
+  const [rejectSaving, setRejectSaving] = useState(false);
+  const [approvingCorrecaoId, setApprovingCorrecaoId] = useState(null);
   
   // Estado de carregamento inicial e mensagens de erro (inline, não usa alert)
   const [isLoading, setIsLoading] = useState(true);
@@ -389,6 +429,9 @@ const ControlePonto = () => {
         id: a.id, userId: a.user_id, date: a.date, hours: parseFloat(a.hours), justification: a.justification
       }));
 
+      const correcoesDb = await supabaseRequest('correcoes_pendentes', 'GET', { query: '?select=*&order=created_at.asc' });
+      const correcoesMapeadas = (correcoesDb || []).map(dbCorrecaoToApp);
+
       const feriasDb = await supabaseRequest('ferias', 'GET', { query: '?select=*' });
       const feriasMapeadas = (feriasDb || []).map(v => ({
         id: v.id,
@@ -412,6 +455,7 @@ const ControlePonto = () => {
       setHolidays(holidaysMapeados);
       setMedicalCertificates(atestadosMapeados);
       setExcusedHours(abonosMapeados);
+      setCorrecoesPendentes(correcoesMapeadas);
       setVacations(feriasMapeadas);
       setOvertimeAlerts(overtimeAlertsMapeados);
       setStorageAvailable(true);
@@ -425,6 +469,7 @@ const ControlePonto = () => {
         holidays: holidaysMapeados,
         medicalCertificates: atestadosMapeados,
         excusedHours: abonosMapeados,
+        correcoesPendentes: correcoesMapeadas,
         vacations: feriasMapeadas,
         overtimeAlerts: overtimeAlertsMapeados,
       });
@@ -442,6 +487,7 @@ const ControlePonto = () => {
         setHolidays(snapshot.holidays || []);
         setMedicalCertificates(snapshot.medicalCertificates || []);
         setExcusedHours(snapshot.excusedHours || []);
+        setCorrecoesPendentes(snapshot.correcoesPendentes || []);
         setVacations(snapshot.vacations || []);
         setOvertimeAlerts(snapshot.overtimeAlerts || []);
         setStorageAvailable(true);
@@ -1288,18 +1334,25 @@ const ControlePonto = () => {
   // funcionário no mês/ano selecionado, considerando apenas dias já
   // encerrados (anteriores a hoje) — o dia atual, mesmo incompleto até agora,
   // ainda pode receber novas marcações e não é considerado inconsistente.
-  const generateInconsistencies = () => {
-    if (!inconsistencyUser || !inconsistencyMonth || !inconsistencyYear) return null;
+  // userIdParam/mesParam/anoParam permitem reaproveitar esta função tanto na
+  // tela de Inconsistências do admin (usa os estados inconsistencyUser/Month/Year
+  // por padrão) quanto na tela "Minhas Pendências" do funcionário (passa o
+  // próprio usuário e o mês/ano selecionado nessa tela).
+  const generateInconsistencies = (userIdParam, mesParam, anoParam) => {
+    const uid = userIdParam || inconsistencyUser;
+    const mesSel = mesParam || inconsistencyMonth;
+    const anoSel = anoParam || inconsistencyYear;
+    if (!uid || !mesSel || !anoSel) return null;
 
-    const user = users.find(u => u.id === inconsistencyUser);
-    const userRecords = timeRecords.filter(r => r.userId === inconsistencyUser);
-    const userAtestados = medicalCertificates.filter(a => a.userId === inconsistencyUser);
+    const user = users.find(u => u.id === uid);
+    const userRecords = timeRecords.filter(r => r.userId === uid);
+    const userAtestados = medicalCertificates.filter(a => a.userId === uid);
     const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
-    const userAbonos = excusedHours.filter(a => a.userId === inconsistencyUser);
+    const userAbonos = excusedHours.filter(a => a.userId === uid);
     const abonoPorData = Object.fromEntries(userAbonos.map(a => [a.date, a]));
 
-    const ano = parseInt(inconsistencyYear);
-    const mes = parseInt(inconsistencyMonth);
+    const ano = parseInt(anoSel);
+    const mes = parseInt(mesSel);
     const diasNoMes = new Date(ano, mes, 0).getDate();
 
     const hoje = new Date();
@@ -1310,7 +1363,7 @@ const ControlePonto = () => {
       const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
       if (dateStr >= hojeStr) continue; // ignora hoje e datas futuras
       if (holidays.some(h => h.date === dateStr)) continue; // dia marcado como feriado — resolvido
-      if (isDateInVacation(inconsistencyUser, dateStr)) continue; // dia de férias — não é inconsistência
+      if (isDateInVacation(uid, dateStr)) continue; // dia de férias — não é inconsistência
 
       const metrics = getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null, null, null, abonoPorData[dateStr] || null);
       const diaSemana = getDiaSemana(dateStr);
@@ -1334,6 +1387,31 @@ const ControlePonto = () => {
     }
 
     return { user, inconsistencias };
+  };
+
+  // Conta, para o funcionário logado, quantas inconsistências "acionáveis"
+  // (resolvíveis por horário e ainda sem correção pendente de aprovação)
+  // existem — usado para o indicador na aba "Minhas Pendências". Varre os
+  // últimos 3 meses (atual + 2 anteriores) para não sumir com pendências
+  // antigas ainda não resolvidas.
+  const getMinhasPendenciasCount = () => {
+    if (!currentUser || currentUser.profile !== 'employee') return 0;
+    let total = 0;
+    const base = new Date();
+    for (let i = 0; i < 3; i++) {
+      const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
+      const mes = String(d.getMonth() + 1).padStart(2, '0');
+      const ano = String(d.getFullYear());
+      const resultado = generateInconsistencies(currentUser.id, mes, ano);
+      if (!resultado) continue;
+      resultado.inconsistencias.forEach(inc => {
+        const resolvivel = inc.status === 'incompleto' || inc.status === 'sem-registro';
+        if (!resolvivel) return;
+        const correcao = correcoesPendentes.find(c => c.userId === currentUser.id && c.date === inc.date);
+        if (!correcao || correcao.status === 'rejeitado') total++;
+      });
+    }
+    return total;
   };
 
   // Abre o modal de ajuste de ponto, pré-preenchendo com o que já existe
@@ -1510,6 +1588,11 @@ const ControlePonto = () => {
         }
       }
 
+      // Se havia uma correção enviada pelo funcionário pendente de aprovação
+      // para este mesmo dia, o ajuste do admin já resolveu o dia — marca essa
+      // correção como aprovada para não deixá-la pendurada indefinidamente.
+      await resolverCorrecaoPendenteDoDia(resolveUserId, resolveDate);
+
       closeResolveModal();
     } catch (error) {
       console.error('Erro ao salvar correção:', error);
@@ -1575,6 +1658,9 @@ const ControlePonto = () => {
       } else {
         setHolidays(holidays.map(h => h.date === resolveDate ? { ...h, description: resolveJustificativa.trim() } : h));
       }
+
+      await resolverCorrecaoPendenteDoDia(resolveUserId, resolveDate);
+
       closeResolveModal();
     } catch (error) {
       console.error('Erro ao marcar feriado:', error);
@@ -1591,6 +1677,204 @@ const ControlePonto = () => {
       handleMarkHoliday();
     } else {
       handleSaveHorarios();
+    }
+  };
+
+  // ===== Correção de inconsistências pelo funcionário (pendente de aprovação) =====
+
+  // Se existir uma correção pendente enviada pelo funcionário para este
+  // usuário/dia, marca como aprovada (silenciosamente) — usado quando o
+  // próprio admin resolve o dia diretamente, para não deixar a correção
+  // pendurada como "aguardando aprovação" para sempre.
+  const resolverCorrecaoPendenteDoDia = async (userId, date) => {
+    const pendente = correcoesPendentes.find(c => c.userId === userId && c.date === date && c.status === 'pendente');
+    if (!pendente) return;
+    const agora = new Date().toISOString();
+    await supabaseRequest('correcoes_pendentes', 'PATCH', {
+      query: `?id=eq.${pendente.id}`,
+      body: { status: 'aprovado', resolved_at: agora },
+    });
+    setCorrecoesPendentes(prev => prev.map(c => c.id === pendente.id ? { ...c, status: 'aprovado', resolvedAt: agora } : c));
+  };
+
+  // Aprova uma correção enviada pelo funcionário: aplica os horários
+  // propostos ao dia (mesma lógica de handleSaveHorarios) e marca a
+  // correção como aprovada.
+  const handleApproveCorrecao = async (correcao) => {
+    setApprovingCorrecaoId(correcao.id);
+    try {
+      const usuarioAlvo = users.find(u => u.id === correcao.userId);
+
+      await supabaseRequest('registros_ponto', 'DELETE', {
+        query: `?user_id=eq.${correcao.userId}&date=eq.${correcao.date}`
+      });
+
+      const horarios = [
+        ...(correcao.entrada ? [{ label: 'entrada', valor: correcao.entrada }] : []),
+        ...(correcao.inicioIntervalo ? [{ label: 'início intervalo', valor: correcao.inicioIntervalo }] : []),
+        ...(correcao.fimIntervalo ? [{ label: 'fim intervalo', valor: correcao.fimIntervalo }] : []),
+        ...(correcao.saida ? [{ label: 'saída', valor: correcao.saida }] : []),
+      ];
+
+      let novosRegistros = [];
+      if (horarios.length > 0) {
+        const linhas = horarios.map((h, idx) => ({
+          user_id: correcao.userId,
+          user_name: usuarioAlvo?.name || '',
+          date: correcao.date,
+          time: `${h.valor}:00`,
+          datetime: `${correcao.date}T${h.valor}:00`,
+          type: idx % 2 === 0 ? 'entrada' : 'saída',
+          manually_adjusted: true,
+          adjustment_reason: `Corrigido pelo funcionário: ${correcao.justification}`,
+        }));
+        const inseridos = await supabaseRequest('registros_ponto', 'POST', { body: linhas });
+        novosRegistros = inseridos.map(dbRecordToApp);
+      }
+
+      setTimeRecords(prev => [
+        ...prev.filter(r => !(r.userId === correcao.userId && r.date === correcao.date)),
+        ...novosRegistros,
+      ]);
+
+      const agora = new Date().toISOString();
+      await supabaseRequest('correcoes_pendentes', 'PATCH', {
+        query: `?id=eq.${correcao.id}`,
+        body: { status: 'aprovado', resolved_at: agora },
+      });
+      setCorrecoesPendentes(prev => prev.map(c => c.id === correcao.id ? { ...c, status: 'aprovado', resolvedAt: agora } : c));
+    } catch (error) {
+      console.error('Erro ao aprovar correção:', error);
+      alert('Não foi possível aprovar a correção: ' + error.message);
+    } finally {
+      setApprovingCorrecaoId(null);
+    }
+  };
+
+  const handleConfirmRejectCorrecao = async () => {
+    if (!rejectingCorrecao) return;
+    if (!rejectMotivo.trim()) return;
+    setRejectSaving(true);
+    try {
+      const agora = new Date().toISOString();
+      await supabaseRequest('correcoes_pendentes', 'PATCH', {
+        query: `?id=eq.${rejectingCorrecao.id}`,
+        body: { status: 'rejeitado', rejection_reason: rejectMotivo.trim(), resolved_at: agora },
+      });
+      setCorrecoesPendentes(prev => prev.map(c => c.id === rejectingCorrecao.id ? { ...c, status: 'rejeitado', rejectionReason: rejectMotivo.trim(), resolvedAt: agora } : c));
+      setRejectingCorrecao(null);
+      setRejectMotivo('');
+    } catch (error) {
+      console.error('Erro ao rejeitar correção:', error);
+      alert('Não foi possível rejeitar a correção: ' + error.message);
+    } finally {
+      setRejectSaving(false);
+    }
+  };
+
+  // Abre o modal do funcionário para propor a correção de um dia
+  // inconsistente. Pré-preenche com os horários já registrados naquele dia
+  // (igual ao modal do admin) ou, se já houver uma correção rejeitada
+  // anterior para o mesmo dia, com o que foi proposto da última vez.
+  const openMyCorrectionModal = (inc) => {
+    const anterior = correcoesPendentes.find(c => c.userId === currentUser.id && c.date === inc.date);
+    setMyCorrectionExistente(anterior || null);
+    setMyCorrectionDate(inc.date);
+    setMyCorrectionOriginalDia(inc);
+    if (anterior && anterior.status === 'rejeitado') {
+      setMyCorrectionEntrada(anterior.entrada ? anterior.entrada.substring(0, 5) : '');
+      setMyCorrectionInicioIntervalo(anterior.inicioIntervalo ? anterior.inicioIntervalo.substring(0, 5) : '');
+      setMyCorrectionFimIntervalo(anterior.fimIntervalo ? anterior.fimIntervalo.substring(0, 5) : '');
+      setMyCorrectionSaida(anterior.saida ? anterior.saida.substring(0, 5) : '');
+      setMyCorrectionJustificativa(anterior.justification || '');
+    } else {
+      setMyCorrectionEntrada(inc.entrada ? inc.entrada.substring(0, 5) : '');
+      setMyCorrectionInicioIntervalo(inc.inicioIntervalo ? inc.inicioIntervalo.substring(0, 5) : '');
+      setMyCorrectionFimIntervalo(inc.fimIntervalo ? inc.fimIntervalo.substring(0, 5) : '');
+      setMyCorrectionSaida(inc.saida ? inc.saida.substring(0, 5) : '');
+      setMyCorrectionJustificativa('');
+    }
+    setMyCorrectionError('');
+    setMyCorrectionModalOpen(true);
+  };
+
+  const closeMyCorrectionModal = () => {
+    setMyCorrectionModalOpen(false);
+    setMyCorrectionError('');
+    setMyCorrectionOriginalDia(null);
+    setMyCorrectionExistente(null);
+  };
+
+  // Envia (ou reenvia, se a anterior foi rejeitada) a proposta de correção
+  // de horários do funcionário. Fica com status "pendente" até o admin
+  // aprovar ou rejeitar — não altera registros_ponto diretamente.
+  const handleSubmitMyCorrection = async () => {
+    setMyCorrectionError('');
+
+    if (!myCorrectionJustificativa.trim()) {
+      setMyCorrectionError('Informe a justificativa da correção.');
+      return;
+    }
+    if (!myCorrectionEntrada || !myCorrectionSaida) {
+      setMyCorrectionError('Informe entrada e saída.');
+      return;
+    }
+
+    const horarios = [
+      ...(myCorrectionEntrada ? [{ label: 'entrada', valor: myCorrectionEntrada }] : []),
+      ...(myCorrectionInicioIntervalo ? [{ label: 'início intervalo', valor: myCorrectionInicioIntervalo }] : []),
+      ...(myCorrectionFimIntervalo ? [{ label: 'fim intervalo', valor: myCorrectionFimIntervalo }] : []),
+      ...(myCorrectionSaida ? [{ label: 'saída', valor: myCorrectionSaida }] : []),
+    ];
+
+    for (let i = 0; i < horarios.length - 1; i++) {
+      if (horarios[i].valor >= horarios[i + 1].valor) {
+        setMyCorrectionError(`O horário de "${horarios[i + 1].label}" precisa ser depois do de "${horarios[i].label}".`);
+        return;
+      }
+    }
+    if ((myCorrectionInicioIntervalo && !myCorrectionFimIntervalo) || (!myCorrectionInicioIntervalo && myCorrectionFimIntervalo)) {
+      setMyCorrectionError('Preencha início E fim do intervalo, ou deixe os dois em branco.');
+      return;
+    }
+
+    setMyCorrectionSaving(true);
+    try {
+      const body = {
+        entrada: myCorrectionEntrada || null,
+        inicio_intervalo: myCorrectionInicioIntervalo || null,
+        fim_intervalo: myCorrectionFimIntervalo || null,
+        saida: myCorrectionSaida || null,
+        justification: myCorrectionJustificativa.trim(),
+        status: 'pendente',
+        rejection_reason: null,
+        resolved_at: null,
+      };
+
+      if (myCorrectionExistente) {
+        await supabaseRequest('correcoes_pendentes', 'PATCH', {
+          query: `?id=eq.${myCorrectionExistente.id}`,
+          body,
+        });
+        setCorrecoesPendentes(prev => prev.map(c => c.id === myCorrectionExistente.id ? {
+          ...c,
+          entrada: body.entrada, inicioIntervalo: body.inicio_intervalo, fimIntervalo: body.fim_intervalo, saida: body.saida,
+          justification: body.justification, status: 'pendente', rejectionReason: null, resolvedAt: null,
+        } : c));
+      } else {
+        const inserido = await supabaseRequest('correcoes_pendentes', 'POST', {
+          body: { user_id: currentUser.id, date: myCorrectionDate, ...body },
+        });
+        const novo = dbCorrecaoToApp(inserido[0]);
+        setCorrecoesPendentes(prev => [...prev, novo]);
+      }
+
+      closeMyCorrectionModal();
+    } catch (error) {
+      console.error('Erro ao enviar correção:', error);
+      setMyCorrectionError('Erro ao enviar: ' + error.message);
+    } finally {
+      setMyCorrectionSaving(false);
     }
   };
 
@@ -2404,6 +2688,106 @@ const ControlePonto = () => {
           );
         })()}
 
+        {/* Tela "Minhas Pendências" (funcionário corrige as próprias inconsistências) */}
+        {activeView === 'mypendencias' && currentUser?.profile === 'employee' && (() => {
+          const nomesMeses = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+          const resultado = generateInconsistencies(currentUser.id, pendingMonth, pendingYear);
+          return (
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Minhas Pendências</h2>
+              <p className="text-sm text-gray-500 mb-6">Corrija dias com marcação incompleta. A correção fica pendente até o administrador aprovar.</p>
+
+              <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Mês</label>
+                    <select
+                      value={pendingMonth}
+                      onChange={(e) => setPendingMonth(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                    >
+                      {nomesMeses.slice(1).map((nome, idx) => (
+                        <option key={idx} value={String(idx + 1).padStart(2, '0')}>{nome}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Ano</label>
+                    <input
+                      type="number"
+                      value={pendingYear}
+                      onChange={(e) => setPendingYear(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {resultado && (
+                resultado.inconsistencias.length === 0 ? (
+                  <div className="bg-white rounded-xl shadow-lg p-6">
+                    <p className="text-center text-gray-500 py-2">
+                      ✅ Nenhuma pendência em {nomesMeses[parseInt(pendingMonth)]} de {pendingYear}.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {resultado.inconsistencias.map((inc) => {
+                      const resolvivel = inc.status === 'incompleto' || inc.status === 'sem-registro';
+                      const correcao = correcoesPendentes.find(c => c.userId === currentUser.id && c.date === inc.date);
+
+                      return (
+                        <div key={inc.date} className="bg-white rounded-xl shadow-sm border border-amber-200 p-4">
+                          <div className="flex items-center justify-between mb-2 gap-2">
+                            <h4 className="font-semibold text-gray-900">
+                              {formatDate(inc.date)} — {inc.diaSemana.nome}
+                            </h4>
+                            {resolvivel && (!correcao || correcao.status === 'rejeitado') && (
+                              <button
+                                onClick={() => openMyCorrectionModal(inc)}
+                                className="px-3 py-1.5 bg-indigo-600 text-white text-xs font-semibold rounded-lg hover:bg-indigo-700 transition-colors flex-shrink-0"
+                              >
+                                {correcao?.status === 'rejeitado' ? 'Corrigir novamente' : 'Corrigir'}
+                              </button>
+                            )}
+                          </div>
+                          <p className="text-sm text-amber-800 mb-2">{inc.motivo}</p>
+                          <div className="flex flex-wrap gap-3 text-xs text-gray-600 font-mono mb-1">
+                            <span>Entrada: {formatHoraCurta(inc.entrada)}</span>
+                            <span>Início intervalo: {formatHoraCurta(inc.inicioIntervalo)}</span>
+                            <span>Fim intervalo: {formatHoraCurta(inc.fimIntervalo)}</span>
+                            <span>Saída: {formatHoraCurta(inc.saida)}</span>
+                          </div>
+
+                          {!resolvivel && (
+                            <div className="mt-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-600">
+                              Esse tipo de pendência não pode ser corrigido por aqui — fale com o administrador.
+                            </div>
+                          )}
+
+                          {resolvivel && correcao?.status === 'pendente' && (
+                            <div className="mt-2 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 flex items-center gap-1.5 text-xs text-indigo-700 font-semibold">
+                              <Hourglass className="w-3.5 h-3.5 flex-shrink-0" />
+                              Correção enviada — aguardando aprovação
+                            </div>
+                          )}
+
+                          {resolvivel && correcao?.status === 'rejeitado' && (
+                            <div className="mt-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">
+                              <p className="font-semibold mb-0.5">Correção rejeitada</p>
+                              {correcao.rejectionReason && <p>{correcao.rejectionReason}</p>}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )
+              )}
+            </div>
+          );
+        })()}
+
         {/* Tela de Início */}
         {activeView === 'home' && currentUser?.profile === 'admin' && (() => {
           const resumo = getHomeSummary();
@@ -2451,6 +2835,23 @@ const ControlePonto = () => {
                   value={resumo.totalInconsistencias}
                   label="Inconsistências"
                   alerta={resumo.totalInconsistencias > 0}
+                />
+                <Tile
+                  onClick={() => {
+                    const pendentes = correcoesPendentes.filter(c => c.status === 'pendente');
+                    if (pendentes.length > 0) {
+                      const hojeNav = new Date(pendentes[0].date + 'T00:00:00');
+                      setInconsistencyMonth(String(hojeNav.getMonth() + 1).padStart(2, '0'));
+                      setInconsistencyYear(String(hojeNav.getFullYear()));
+                      setInconsistencyUser(pendentes[0].userId);
+                    }
+                    setActiveView('inconsistencies');
+                  }}
+                  Icon={Hourglass}
+                  iconColor="text-indigo-500"
+                  value={correcoesPendentes.filter(c => c.status === 'pendente').length}
+                  label="Correções p/ aprovar"
+                  alerta={correcoesPendentes.some(c => c.status === 'pendente')}
                 />
                 <Tile
                   onClick={() => setActiveView('vacations')}
@@ -3044,18 +3445,22 @@ const ControlePonto = () => {
                       </p>
                     ) : (
                       <div className="space-y-3">
-                        {resultado.inconsistencias.map((inc) => (
+                        {resultado.inconsistencias.map((inc) => {
+                          const correcaoPendente = correcoesPendentes.find(c => c.userId === inconsistencyUser && c.date === inc.date && c.status === 'pendente');
+                          return (
                           <div key={inc.date} className="border border-amber-200 bg-amber-50 rounded-lg p-4">
                             <div className="flex items-center justify-between mb-2">
                               <h4 className="font-semibold text-gray-900">
                                 {formatDate(inc.date)} — {inc.diaSemana.nome}
                               </h4>
-                              <button
-                                onClick={() => openResolveModal(inc, inconsistencyUser)}
-                                className="px-3 py-1.5 bg-indigo-600 text-white text-xs font-semibold rounded-lg hover:bg-indigo-700 transition-colors flex-shrink-0"
-                              >
-                                Corrigir
-                              </button>
+                              {!correcaoPendente && (
+                                <button
+                                  onClick={() => openResolveModal(inc, inconsistencyUser)}
+                                  className="px-3 py-1.5 bg-indigo-600 text-white text-xs font-semibold rounded-lg hover:bg-indigo-700 transition-colors flex-shrink-0"
+                                >
+                                  Corrigir
+                                </button>
+                              )}
                             </div>
                             <p className="text-sm text-amber-800 mb-2">{inc.motivo}</p>
                             <div className="flex flex-wrap gap-3 text-xs text-gray-600 font-mono">
@@ -3064,8 +3469,43 @@ const ControlePonto = () => {
                               <span>Fim intervalo: {formatHoraCurta(inc.fimIntervalo)}</span>
                               <span>Saída: {formatHoraCurta(inc.saida)}</span>
                             </div>
+
+                            {correcaoPendente && (
+                              <div className="mt-3 bg-indigo-50 border border-indigo-200 rounded-lg p-3">
+                                <div className="flex items-center gap-1.5 text-indigo-700 text-xs font-semibold mb-2">
+                                  <Hourglass className="w-3.5 h-3.5" />
+                                  Correção enviada pelo funcionário — aguardando aprovação
+                                </div>
+                                <div className="flex flex-wrap gap-3 text-xs text-gray-600 font-mono mb-2">
+                                  <span>Entrada: {formatHoraCurta(correcaoPendente.entrada)}</span>
+                                  <span>Início intervalo: {formatHoraCurta(correcaoPendente.inicioIntervalo)}</span>
+                                  <span>Fim intervalo: {formatHoraCurta(correcaoPendente.fimIntervalo)}</span>
+                                  <span>Saída: {formatHoraCurta(correcaoPendente.saida)}</span>
+                                </div>
+                                <p className="text-xs text-gray-600 mb-3"><strong>Justificativa:</strong> {correcaoPendente.justification}</p>
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={() => { setRejectingCorrecao(correcaoPendente); setRejectMotivo(''); }}
+                                    disabled={approvingCorrecaoId === correcaoPendente.id}
+                                    className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-white border border-red-200 text-red-600 text-xs font-semibold rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
+                                  >
+                                    <XCircle className="w-4 h-4" />
+                                    Rejeitar
+                                  </button>
+                                  <button
+                                    onClick={() => handleApproveCorrecao(correcaoPendente)}
+                                    disabled={approvingCorrecaoId === correcaoPendente.id}
+                                    className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                                  >
+                                    <CheckCircle2 className="w-4 h-4" />
+                                    {approvingCorrecaoId === correcaoPendente.id ? 'Aprovando...' : 'Aprovar'}
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -3492,27 +3932,38 @@ const ControlePonto = () => {
       )}
 
       {/* Barra de navegação inferior (funcionário) */}
-      {currentUser?.profile === 'employee' && (
+      {currentUser?.profile === 'employee' && (() => {
+        const pendenciasCount = getMinhasPendenciasCount();
+        return (
         <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-40 pb-[env(safe-area-inset-bottom)]">
-          <div className="max-w-7xl mx-auto grid grid-cols-2">
+          <div className="max-w-7xl mx-auto grid grid-cols-3">
             {[
               { view: 'clock', label: 'Registrar Ponto', Icon: Clock },
               { view: 'myreport', label: 'Meu Espelho', Icon: FileText },
-            ].map(({ view, label, Icon }) => (
+              { view: 'mypendencias', label: 'Pendências', Icon: ClipboardList, badge: pendenciasCount },
+            ].map(({ view, label, Icon, badge }) => (
               <button
                 key={view}
                 onClick={() => setActiveView(view)}
-                className={`flex flex-col items-center justify-center gap-0.5 py-2 transition-colors ${
+                className={`relative flex flex-col items-center justify-center gap-0.5 py-2 transition-colors ${
                   activeView === view ? 'text-indigo-600' : 'text-gray-400'
                 }`}
               >
-                <Icon className="w-5 h-5" />
+                <span className="relative">
+                  <Icon className="w-5 h-5" />
+                  {!!badge && (
+                    <span className="absolute -top-1.5 -right-2 bg-red-500 text-white text-[9px] font-bold leading-none rounded-full w-4 h-4 flex items-center justify-center">
+                      {badge > 9 ? '9+' : badge}
+                    </span>
+                  )}
+                </span>
                 <span className="text-[11px] font-medium leading-none">{label}</span>
               </button>
             ))}
           </div>
         </nav>
-      )}
+        );
+      })()}
 
       {/* Modal de confirmação de reset de senha */}
       {confirmResetPasswordUser && (
@@ -3828,6 +4279,208 @@ const ControlePonto = () => {
                   className="flex-1 bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 transition-all disabled:opacity-50"
                 >
                   {deletingDia ? 'Excluindo...' : 'Excluir'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de rejeição de correção enviada pelo funcionário (admin) */}
+      {rejectingCorrecao && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-sm">
+            <div className="p-6">
+              <div className="w-14 h-14 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <XCircle className="w-7 h-7 text-red-600" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 mb-2 text-center">Rejeitar correção</h3>
+              <p className="text-gray-500 text-sm mb-4 text-center">
+                Explique ao funcionário por que a correção de <strong>{formatDate(rejectingCorrecao.date)}</strong> foi rejeitada. Ele poderá reenviar corrigida.
+              </p>
+              <textarea
+                value={rejectMotivo}
+                onChange={(e) => setRejectMotivo(e.target.value)}
+                placeholder="Ex: Horário de saída não confere com o crachá da portaria"
+                rows={3}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none resize-none mb-4"
+              />
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { setRejectingCorrecao(null); setRejectMotivo(''); }}
+                  disabled={rejectSaving}
+                  className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleConfirmRejectCorrecao}
+                  disabled={rejectSaving || !rejectMotivo.trim()}
+                  className="flex-1 bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 transition-all disabled:opacity-50"
+                >
+                  {rejectSaving ? 'Rejeitando...' : 'Rejeitar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal do funcionário para propor correção de horários de um dia inconsistente */}
+      {myCorrectionModalOpen && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <h3 className="text-lg font-bold text-gray-900">
+                Corrigir {formatDate(myCorrectionDate)}
+              </h3>
+              <button onClick={closeMyCorrectionModal} className="p-1 text-gray-400 hover:text-gray-600">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {myCorrectionExistente?.status === 'rejeitado' && myCorrectionExistente.rejectionReason && (
+                <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-xs text-red-700">
+                  <strong>Correção anterior rejeitada: </strong>{myCorrectionExistente.rejectionReason}
+                </div>
+              )}
+
+              {myCorrectionOriginalDia && (
+                <div className="bg-gray-50 rounded-lg px-3 py-2.5 text-xs text-gray-500">
+                  <strong className="text-gray-600">Atualmente: </strong>
+                  {myCorrectionOriginalDia.motivo}
+                </div>
+              )}
+
+              <p className="text-xs text-gray-400">
+                Sua correção fica pendente até o administrador aprovar. Você pode acompanhar o status na aba Pendências.
+              </p>
+
+              <div className="space-y-2">
+                <div className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2">
+                  <span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></span>
+                  <label className="flex-1 text-sm font-medium text-gray-700">Entrada</label>
+                  <div className="relative">
+                    <input
+                      type="time"
+                      value={myCorrectionEntrada}
+                      onChange={(e) => setMyCorrectionEntrada(e.target.value)}
+                      className="px-2 py-1.5 pr-7 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
+                    />
+                    {myCorrectionEntrada && (
+                      <button
+                        type="button"
+                        onClick={() => setMyCorrectionEntrada('')}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        aria-label="Limpar horário de entrada"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2">
+                  <span className="w-2 h-2 rounded-full bg-gray-300 flex-shrink-0"></span>
+                  <label className="flex-1 text-sm font-medium text-gray-700">Início intervalo</label>
+                  <div className="relative">
+                    <input
+                      type="time"
+                      value={myCorrectionInicioIntervalo}
+                      onChange={(e) => setMyCorrectionInicioIntervalo(e.target.value)}
+                      className="px-2 py-1.5 pr-7 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
+                    />
+                    {myCorrectionInicioIntervalo && (
+                      <button
+                        type="button"
+                        onClick={() => setMyCorrectionInicioIntervalo('')}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        aria-label="Limpar horário de início do intervalo"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2">
+                  <span className="w-2 h-2 rounded-full bg-gray-300 flex-shrink-0"></span>
+                  <label className="flex-1 text-sm font-medium text-gray-700">Fim intervalo</label>
+                  <div className="relative">
+                    <input
+                      type="time"
+                      value={myCorrectionFimIntervalo}
+                      onChange={(e) => setMyCorrectionFimIntervalo(e.target.value)}
+                      className="px-2 py-1.5 pr-7 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
+                    />
+                    {myCorrectionFimIntervalo && (
+                      <button
+                        type="button"
+                        onClick={() => setMyCorrectionFimIntervalo('')}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        aria-label="Limpar horário de fim do intervalo"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2">
+                  <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0"></span>
+                  <label className="flex-1 text-sm font-medium text-gray-700">Saída</label>
+                  <div className="relative">
+                    <input
+                      type="time"
+                      value={myCorrectionSaida}
+                      onChange={(e) => setMyCorrectionSaida(e.target.value)}
+                      className="px-2 py-1.5 pr-7 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none bg-white"
+                    />
+                    {myCorrectionSaida && (
+                      <button
+                        type="button"
+                        onClick={() => setMyCorrectionSaida('')}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        aria-label="Limpar horário de saída"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <p className="text-xs text-gray-400">
+                Entrada e Saída são obrigatórios. Intervalo é opcional, mas se preencher um lado, precisa preencher o outro.
+              </p>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Justificativa *</label>
+                <textarea
+                  value={myCorrectionJustificativa}
+                  onChange={(e) => setMyCorrectionJustificativa(e.target.value)}
+                  placeholder="Explique o motivo deste ajuste"
+                  rows={2}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none resize-none"
+                />
+              </div>
+
+              {myCorrectionError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
+                  {myCorrectionError}
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  onClick={closeMyCorrectionModal}
+                  className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleSubmitMyCorrection}
+                  disabled={myCorrectionSaving}
+                  className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
+                >
+                  {myCorrectionSaving ? 'Enviando...' : 'Enviar para aprovação'}
                 </button>
               </div>
             </div>
