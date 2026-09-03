@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v7.6-correcao-inconsistencia-funcionario';
+const APP_VERSION = 'v7.7-motivo-ajuste-visivel-mobile';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -359,6 +359,11 @@ const ControlePonto = () => {
   // cards do Relatório). Guarda { userId, userName, date, dateLabel }.
   const [confirmDeleteDia, setConfirmDeleteDia] = useState(null);
   const [deletingDia, setDeletingDia] = useState(false);
+
+  // Controla qual card de dia está com o motivo do ajuste manual expandido
+  // (toque no ícone da chave inglesa) — tooltip por hover não funciona em
+  // touchscreen, então o motivo precisa ficar visível ao tocar/tap.
+  const [expandedAdjustmentKey, setExpandedAdjustmentKey] = useState(null);
 
   // Estado para a tela "Minhas Pendências" (funcionário corrige as próprias
   // inconsistências de horário, ficando pendente de aprovação do admin)
@@ -2614,9 +2619,14 @@ const ControlePonto = () => {
                               <p className="font-semibold text-gray-900">{diaSemana.nome}, {formatDate(dia.date)}</p>
                               <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                                 {dia.isManuallyAdjusted && (
-                                  <span title={dia.adjustmentReason || 'Ajuste manual'}>
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedAdjustmentKey(k => k === `myreport-${dia.date}` ? null : `myreport-${dia.date}`)}
+                                    className="p-0.5 -m-0.5"
+                                    aria-label="Ver motivo do ajuste"
+                                  >
                                     <Wrench className="w-4 h-4 text-indigo-500" />
-                                  </span>
+                                  </button>
                                 )}
                                 {dia.temAtestado && (
                                   <span title={`Atestado médico: ${dia.atestadoHoras}h`}>
@@ -2639,6 +2649,11 @@ const ControlePonto = () => {
                                   </span>
                                 )}
                               </div>
+                              {dia.isManuallyAdjusted && expandedAdjustmentKey === `myreport-${dia.date}` && (
+                                <p className="text-xs text-indigo-600 bg-indigo-50 rounded-lg px-2 py-1.5 mt-1.5">
+                                  {dia.adjustmentReason || 'Ajuste manual, sem motivo registrado.'}
+                                </p>
+                              )}
                             </div>
                           </div>
 
@@ -3226,9 +3241,14 @@ const ControlePonto = () => {
                               </p>
                               <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                                 {dia.isManuallyAdjusted && (
-                                  <span title={dia.adjustmentReason || 'Ajuste manual'}>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); setExpandedAdjustmentKey(k => k === `report-${dia.date}` ? null : `report-${dia.date}`); }}
+                                    className="p-0.5 -m-0.5"
+                                    aria-label="Ver motivo do ajuste"
+                                  >
                                     <Wrench className="w-4 h-4 text-indigo-500" />
-                                  </span>
+                                  </button>
                                 )}
                                 {dia.temAtestado && (
                                   <span title={`Atestado médico: ${dia.atestadoHoras}h — ${dia.atestadoJustificativa || ''}`}>
@@ -3256,6 +3276,11 @@ const ControlePonto = () => {
                                   </span>
                                 )}
                               </div>
+                              {dia.isManuallyAdjusted && expandedAdjustmentKey === `report-${dia.date}` && (
+                                <p className="text-xs text-indigo-600 bg-indigo-50 rounded-lg px-2 py-1.5 mt-1.5">
+                                  {dia.adjustmentReason || 'Ajuste manual, sem motivo registrado.'}
+                                </p>
+                              )}
                             </div>
                             <div className="flex items-center gap-2 flex-shrink-0">
                               {dia.status !== 'sem-registro' && (
