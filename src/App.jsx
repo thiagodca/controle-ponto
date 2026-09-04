@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree, Home, CalendarClock, Eye, EyeOff, HandCoins, ClipboardList, CheckCircle2, XCircle, Hourglass } from 'lucide-react';
+import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree, Home, CalendarClock, Eye, EyeOff, HandCoins, ClipboardList, CheckCircle2, XCircle, Hourglass, Lock, Unlock, ShieldCheck } from 'lucide-react';
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v7.7-motivo-ajuste-visivel-mobile';
+const APP_VERSION = 'v7.8-aceite-espelho-mes';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -165,6 +165,10 @@ const atualizarSnapshotComNovoRegistro = (novoRegistro) => {
 };
 
 
+// Nomes dos meses em português, usado nos modais que ficam fora dos blocos
+// de tela que já declaram sua própria cópia local dessa lista.
+const NOMES_MESES_MODAL = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+
 const dbUserToApp = (u) => ({
   id: u.id,
   name: u.name,
@@ -203,6 +207,30 @@ const dbCorrecaoToApp = (c) => ({
   rejectionReason: c.rejection_reason,
   createdAt: c.created_at,
   resolvedAt: c.resolved_at,
+});
+
+// Mapeia um aceite de espelho do mês (tabela aceites_espelho) — a mera
+// existência de uma linha para (userId, month, year) significa "mês travado".
+const dbAceiteToApp = (a) => ({
+  id: a.id,
+  userId: a.user_id,
+  month: a.month,
+  year: a.year,
+  acceptedAt: a.accepted_at,
+});
+
+// Mapeia uma reabertura de espelho já aceito (tabela reaberturas_espelho) —
+// histórico/auditoria, uma linha por reabertura feita pelo admin.
+const dbReaberturaToApp = (r) => ({
+  id: r.id,
+  userId: r.user_id,
+  month: r.month,
+  year: r.year,
+  motivo: r.motivo,
+  reopenedBy: r.reopened_by,
+  reopenedByName: r.reopened_by_name,
+  previousAcceptedAt: r.previous_accepted_at,
+  createdAt: r.created_at,
 });
 
 // Obtém a localização atual do navegador (com timeout) e retorna coordenadas.
@@ -318,6 +346,8 @@ const ControlePonto = () => {
   const [medicalCertificates, setMedicalCertificates] = useState([]); // [{id, userId, date, hours, justification}]
   const [excusedHours, setExcusedHours] = useState([]); // [{id, userId, date, hours, justification}] — horas abonadas
   const [correcoesPendentes, setCorrecoesPendentes] = useState([]); // [{id, userId, date, entrada, inicioIntervalo, fimIntervalo, saida, justification, status, rejectionReason, createdAt, resolvedAt}] — correções de inconsistência propostas pelo funcionário, aguardando aprovação do admin
+  const [aceitesEspelho, setAceitesEspelho] = useState([]); // [{id, userId, month, year, acceptedAt}] — presença de um registro = mês travado (aceito pelo funcionário)
+  const [reaberturasEspelho, setReaberturasEspelho] = useState([]); // [{id, userId, month, year, motivo, reopenedBy, reopenedByName, previousAcceptedAt, createdAt}] — histórico de reaberturas de mês já aceito
   const [vacations, setVacations] = useState([]); // [{id, userId, userName, startDate, endDate}]
   const [overtimeAlerts, setOvertimeAlerts] = useState([]); // [{id, userId, userName, type, thresholdHours}]
   
@@ -386,6 +416,13 @@ const ControlePonto = () => {
   const [rejectMotivo, setRejectMotivo] = useState('');
   const [rejectSaving, setRejectSaving] = useState(false);
   const [approvingCorrecaoId, setApprovingCorrecaoId] = useState(null);
+
+  // Aceite do espelho do mês (funcionário) e reabertura (admin)
+  const [acceptEspelhoSaving, setAcceptEspelhoSaving] = useState(false);
+  const [confirmAcceptEspelho, setConfirmAcceptEspelho] = useState(false);
+  const [reopeningEspelho, setReopeningEspelho] = useState(null); // { aceiteId, userId, userName, month, year, acceptedAt }
+  const [reopenMotivo, setReopenMotivo] = useState('');
+  const [reopenSaving, setReopenSaving] = useState(false);
   
   // Estado de carregamento inicial e mensagens de erro (inline, não usa alert)
   const [isLoading, setIsLoading] = useState(true);
@@ -437,6 +474,12 @@ const ControlePonto = () => {
       const correcoesDb = await supabaseRequest('correcoes_pendentes', 'GET', { query: '?select=*&order=created_at.asc' });
       const correcoesMapeadas = (correcoesDb || []).map(dbCorrecaoToApp);
 
+      const aceitesDb = await supabaseRequest('aceites_espelho', 'GET', { query: '?select=*' });
+      const aceitesMapeados = (aceitesDb || []).map(dbAceiteToApp);
+
+      const reaberturasDb = await supabaseRequest('reaberturas_espelho', 'GET', { query: '?select=*&order=created_at.desc' });
+      const reaberturasMapeadas = (reaberturasDb || []).map(dbReaberturaToApp);
+
       const feriasDb = await supabaseRequest('ferias', 'GET', { query: '?select=*' });
       const feriasMapeadas = (feriasDb || []).map(v => ({
         id: v.id,
@@ -461,6 +504,8 @@ const ControlePonto = () => {
       setMedicalCertificates(atestadosMapeados);
       setExcusedHours(abonosMapeados);
       setCorrecoesPendentes(correcoesMapeadas);
+      setAceitesEspelho(aceitesMapeados);
+      setReaberturasEspelho(reaberturasMapeadas);
       setVacations(feriasMapeadas);
       setOvertimeAlerts(overtimeAlertsMapeados);
       setStorageAvailable(true);
@@ -475,6 +520,8 @@ const ControlePonto = () => {
         medicalCertificates: atestadosMapeados,
         excusedHours: abonosMapeados,
         correcoesPendentes: correcoesMapeadas,
+        aceitesEspelho: aceitesMapeados,
+        reaberturasEspelho: reaberturasMapeadas,
         vacations: feriasMapeadas,
         overtimeAlerts: overtimeAlertsMapeados,
       });
@@ -493,6 +540,8 @@ const ControlePonto = () => {
         setMedicalCertificates(snapshot.medicalCertificates || []);
         setExcusedHours(snapshot.excusedHours || []);
         setCorrecoesPendentes(snapshot.correcoesPendentes || []);
+        setAceitesEspelho(snapshot.aceitesEspelho || []);
+        setReaberturasEspelho(snapshot.reaberturasEspelho || []);
         setVacations(snapshot.vacations || []);
         setOvertimeAlerts(snapshot.overtimeAlerts || []);
         setStorageAvailable(true);
@@ -1419,10 +1468,93 @@ const ControlePonto = () => {
     return total;
   };
 
+  // ===== Aceite do espelho do mês (trava o mês) =====
+
+  const getAceite = (userId, mes, ano) =>
+    aceitesEspelho.find(a => a.userId === userId && a.month === parseInt(mes) && a.year === parseInt(ano));
+
+  const isMonthLocked = (userId, mes, ano) => !!getAceite(userId, mes, ano);
+
+  // Um mês só pode ser aceito depois de encerrado (não o mês/ano corrente nem futuro)
+  const isMesEncerrado = (mes, ano) => {
+    const hoje = new Date();
+    const anoAtual = hoje.getFullYear();
+    const mesAtual = hoje.getMonth() + 1;
+    const anoNum = parseInt(ano);
+    const mesNum = parseInt(mes);
+    return anoNum < anoAtual || (anoNum === anoAtual && mesNum < mesAtual);
+  };
+
+  // Funcionário aceita o espelho do mês selecionado em "Meu Espelho". Só é
+  // permitido se o mês já estiver encerrado e sem nenhuma inconsistência
+  // (incluindo correções ainda pendentes de aprovação) em aberto.
+  const handleAcceptEspelho = async () => {
+    if (!currentUser) return;
+    setAcceptEspelhoSaving(true);
+    try {
+      const inserido = await supabaseRequest('aceites_espelho', 'POST', {
+        body: { user_id: currentUser.id, month: parseInt(myReportMonth), year: parseInt(myReportYear) },
+      });
+      const novo = dbAceiteToApp(inserido[0]);
+      setAceitesEspelho(prev => [...prev, novo]);
+      setConfirmAcceptEspelho(false);
+    } catch (error) {
+      console.error('Erro ao aceitar espelho:', error);
+      alert('Não foi possível registrar o aceite: ' + error.message);
+    } finally {
+      setAcceptEspelhoSaving(false);
+    }
+  };
+
+  const openReopenEspelhoModal = (aceite, userName) => {
+    setReopeningEspelho({ ...aceite, userName });
+    setReopenMotivo('');
+  };
+
+  // Admin reabre um mês já aceito: remove a trava e grava o motivo no
+  // histórico de reaberturas, para auditoria.
+  const handleConfirmReopenEspelho = async () => {
+    if (!reopeningEspelho || !reopenMotivo.trim()) return;
+    setReopenSaving(true);
+    try {
+      await supabaseRequest('reaberturas_espelho', 'POST', {
+        body: {
+          user_id: reopeningEspelho.userId,
+          month: reopeningEspelho.month,
+          year: reopeningEspelho.year,
+          motivo: reopenMotivo.trim(),
+          reopened_by: currentUser.id,
+          reopened_by_name: currentUser.name,
+          previous_accepted_at: reopeningEspelho.acceptedAt,
+        },
+      });
+      await supabaseRequest('aceites_espelho', 'DELETE', { query: `?id=eq.${reopeningEspelho.id}` });
+
+      setReaberturasEspelho(prev => [{
+        userId: reopeningEspelho.userId, month: reopeningEspelho.month, year: reopeningEspelho.year,
+        motivo: reopenMotivo.trim(), reopenedBy: currentUser.id, reopenedByName: currentUser.name,
+        previousAcceptedAt: reopeningEspelho.acceptedAt, createdAt: new Date().toISOString(),
+      }, ...prev]);
+      setAceitesEspelho(prev => prev.filter(a => a.id !== reopeningEspelho.id));
+      setReopeningEspelho(null);
+      setReopenMotivo('');
+    } catch (error) {
+      console.error('Erro ao reabrir espelho:', error);
+      alert('Não foi possível reabrir o mês: ' + error.message);
+    } finally {
+      setReopenSaving(false);
+    }
+  };
+
   // Abre o modal de ajuste de ponto, pré-preenchendo com o que já existe
   // naquele dia. Pode ser chamado tanto a partir de uma inconsistência
   // quanto de qualquer dia normal na tela de Relatório.
   const openResolveModal = (dia, userId) => {
+    const [anoDia, mesDia] = dia.date.split('-');
+    if (isMonthLocked(userId, mesDia, anoDia)) {
+      alert('Este mês já foi aceito pelo funcionário e está travado. Reabra o mês na tela de Relatório antes de editar.');
+      return;
+    }
     setResolveUserId(userId);
     setResolveDate(dia.date);
     setResolveEntrada(dia.entrada ? dia.entrada.substring(0, 5) : '');
@@ -1612,6 +1744,12 @@ const ControlePonto = () => {
   // Relatório). Não mexe em atestado/férias/feriado do dia, só nas marcações.
   const handleDeleteDayRecords = async () => {
     if (!confirmDeleteDia) return;
+    const [anoDia, mesDia] = confirmDeleteDia.date.split('-');
+    if (isMonthLocked(confirmDeleteDia.userId, mesDia, anoDia)) {
+      alert('Este mês já foi aceito pelo funcionário e está travado. Reabra o mês antes de excluir lançamentos.');
+      setConfirmDeleteDia(null);
+      return;
+    }
     setDeletingDia(true);
     try {
       await supabaseRequest('registros_ponto', 'DELETE', {
@@ -1815,6 +1953,12 @@ const ControlePonto = () => {
   // aprovar ou rejeitar — não altera registros_ponto diretamente.
   const handleSubmitMyCorrection = async () => {
     setMyCorrectionError('');
+
+    const [anoDia, mesDia] = myCorrectionDate.split('-');
+    if (isMonthLocked(currentUser.id, mesDia, anoDia)) {
+      setMyCorrectionError('Este mês já foi aceito e está travado. Fale com o administrador para reabri-lo.');
+      return;
+    }
 
     if (!myCorrectionJustificativa.trim()) {
       setMyCorrectionError('Informe a justificativa da correção.');
@@ -2598,6 +2742,48 @@ const ControlePonto = () => {
                     </div>
                   </div>
 
+                  {(() => {
+                    const aceite = getAceite(currentUser.id, myReportMonth, myReportYear);
+                    if (aceite) {
+                      return (
+                        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 mb-3 flex items-start gap-2">
+                          <Lock className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+                          <p className="text-sm text-emerald-800">
+                            <strong>Espelho aceito</strong><br />
+                            Você aceitou este espelho em {new Date(aceite.acceptedAt).toLocaleString('pt-BR')}. Fale com o administrador se precisar de alguma alteração.
+                          </p>
+                        </div>
+                      );
+                    }
+                    if (!isMesEncerrado(myReportMonth, myReportYear)) return null;
+                    const resultadoInc = generateInconsistencies(currentUser.id, myReportMonth, myReportYear);
+                    const pendenciasCount = resultadoInc ? resultadoInc.inconsistencias.length : 0;
+                    if (pendenciasCount > 0) {
+                      return (
+                        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-3">
+                          <p className="text-sm text-amber-800 mb-2">
+                            Você tem {pendenciasCount} {pendenciasCount === 1 ? 'pendência' : 'pendências'} neste mês. Resolva antes de aceitar o espelho.
+                          </p>
+                          <button
+                            onClick={() => { setPendingMonth(myReportMonth); setPendingYear(myReportYear); setActiveView('mypendencias'); }}
+                            className="text-xs font-semibold text-amber-700 underline"
+                          >
+                            Ver pendências
+                          </button>
+                        </div>
+                      );
+                    }
+                    return (
+                      <button
+                        onClick={() => setConfirmAcceptEspelho(true)}
+                        className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 text-white py-3 rounded-xl font-bold mb-3 hover:from-emerald-700 hover:to-teal-700 transition-all"
+                      >
+                        <ShieldCheck className="w-5 h-5" />
+                        Aceitar espelho deste mês
+                      </button>
+                    );
+                  })()}
+
                   <div className="space-y-2">
                     {report.dias.map((dia) => {
                       const diaSemana = getDiaSemana(dia.date);
@@ -2867,6 +3053,31 @@ const ControlePonto = () => {
                   value={correcoesPendentes.filter(c => c.status === 'pendente').length}
                   label="Correções p/ aprovar"
                   alerta={correcoesPendentes.some(c => c.status === 'pendente')}
+                />
+                <Tile
+                  onClick={() => {
+                    const hoje = new Date();
+                    const refDate = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+                    const refMonth = refDate.getMonth() + 1;
+                    const refYear = refDate.getFullYear();
+                    const pendentes = users.filter(u => u.profile === 'employee' && !aceitesEspelho.some(a => a.userId === u.id && a.month === refMonth && a.year === refYear));
+                    if (pendentes.length > 0) {
+                      setReportUser(pendentes[0].id);
+                      setReportMonth(String(refMonth).padStart(2, '0'));
+                      setReportYear(String(refYear));
+                    }
+                    setActiveView('report');
+                  }}
+                  Icon={ShieldCheck}
+                  iconColor="text-emerald-500"
+                  value={(() => {
+                    const hoje = new Date();
+                    const refDate = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+                    const refMonth = refDate.getMonth() + 1;
+                    const refYear = refDate.getFullYear();
+                    return users.filter(u => u.profile === 'employee' && !aceitesEspelho.some(a => a.userId === u.id && a.month === refMonth && a.year === refYear)).length;
+                  })()}
+                  label="Espelhos p/ aceitar (mês passado)"
                 />
                 <Tile
                   onClick={() => setActiveView('vacations')}
@@ -3205,8 +3416,31 @@ const ControlePonto = () => {
                     </div>
                   </div>
 
+                  {(() => {
+                    const aceite = getAceite(reportUser, reportMonth, reportYear);
+                    if (!aceite) return null;
+                    return (
+                      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 mb-3 flex items-start justify-between gap-3">
+                        <div className="flex items-start gap-2 min-w-0">
+                          <Lock className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+                          <p className="text-sm text-emerald-800">
+                            <strong>Espelho aceito e travado</strong><br />
+                            Aceito por {report.user.name} em {new Date(aceite.acceptedAt).toLocaleString('pt-BR')}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => openReopenEspelhoModal(aceite, report.user.name)}
+                          className="flex items-center gap-1.5 bg-white border border-emerald-300 text-emerald-700 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-emerald-100 transition-colors flex-shrink-0"
+                        >
+                          <Unlock className="w-3.5 h-3.5" />
+                          Reabrir
+                        </button>
+                      </div>
+                    );
+                  })()}
+
                   <div className="space-y-2">
-                    {report.dias.map((dia) => {
+                    {(() => { const mesTravado = isMonthLocked(reportUser, reportMonth, reportYear); return report.dias.map((dia) => {
                       const diaSemana = getDiaSemana(dia.date);
                       const inconsistente = isDiaInconsistente(dia, diaSemana);
                       const semNadaEspecial = dia.status === 'sem-registro' && !dia.isHoliday && !dia.isVacation && !dia.temAtestado;
@@ -3229,10 +3463,10 @@ const ControlePonto = () => {
                       return (
                         <div
                           key={dia.date}
-                          onClick={() => openResolveModal(dia, reportUser)}
-                          className={`bg-white rounded-xl shadow-sm border p-4 cursor-pointer active:bg-gray-50 transition-colors ${
+                          onClick={() => !mesTravado && openResolveModal(dia, reportUser)}
+                          className={`bg-white rounded-xl shadow-sm border p-4 transition-colors ${
                             inconsistente ? 'border-red-200' : 'border-gray-100'
-                          }`}
+                          } ${mesTravado ? '' : 'cursor-pointer active:bg-gray-50'}`}
                         >
                           <div className="flex items-start justify-between gap-2 mb-2">
                             <div className="min-w-0">
@@ -3283,7 +3517,7 @@ const ControlePonto = () => {
                               )}
                             </div>
                             <div className="flex items-center gap-2 flex-shrink-0">
-                              {dia.status !== 'sem-registro' && (
+                              {dia.status !== 'sem-registro' && !mesTravado && (
                                 <button
                                   type="button"
                                   onClick={(e) => {
@@ -3301,7 +3535,11 @@ const ControlePonto = () => {
                                   <Trash2 className="w-4 h-4" />
                                 </button>
                               )}
-                              <Edit2 className="w-4 h-4 text-gray-300 mt-1" />
+                              {mesTravado ? (
+                                <Lock className="w-4 h-4 text-emerald-400 mt-1" />
+                              ) : (
+                                <Edit2 className="w-4 h-4 text-gray-300 mt-1" />
+                              )}
                             </div>
                           </div>
 
@@ -3352,7 +3590,7 @@ const ControlePonto = () => {
                           </div>
                         </div>
                       );
-                    })}
+                    }); })()}
                   </div>
 
                   <p className="text-xs text-gray-400 text-center mt-4 px-4">
@@ -4506,6 +4744,79 @@ const ControlePonto = () => {
                   className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
                 >
                   {myCorrectionSaving ? 'Enviando...' : 'Enviar para aprovação'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de confirmação de aceite do espelho do mês (funcionário) */}
+      {confirmAcceptEspelho && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-sm">
+            <div className="p-6">
+              <div className="w-14 h-14 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <ShieldCheck className="w-7 h-7 text-emerald-600" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 mb-2 text-center">Aceitar espelho do mês</h3>
+              <p className="text-gray-500 text-sm mb-5 text-center">
+                Ao aceitar, você confirma que os horários registrados em <strong>{NOMES_MESES_MODAL[parseInt(myReportMonth)]} de {myReportYear}</strong> estão corretos. O mês fica travado — se precisar de alguma alteração depois, será preciso falar com o administrador.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setConfirmAcceptEspelho(false)}
+                  disabled={acceptEspelhoSaving}
+                  className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleAcceptEspelho}
+                  disabled={acceptEspelhoSaving}
+                  className="flex-1 bg-gradient-to-r from-emerald-600 to-teal-600 text-white py-3 rounded-lg font-bold hover:from-emerald-700 hover:to-teal-700 transition-all disabled:opacity-50"
+                >
+                  {acceptEspelhoSaving ? 'Aceitando...' : 'Aceitar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de reabertura de espelho já aceito (admin) */}
+      {reopeningEspelho && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-sm">
+            <div className="p-6">
+              <div className="w-14 h-14 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Unlock className="w-7 h-7 text-amber-600" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 mb-2 text-center">Reabrir mês</h3>
+              <p className="text-gray-500 text-sm mb-4 text-center">
+                {reopeningEspelho.userName} havia aceitado o espelho de <strong>{NOMES_MESES_MODAL[reopeningEspelho.month]} de {reopeningEspelho.year}</strong>. Explique o motivo da reabertura — isso fica registrado.
+              </p>
+              <textarea
+                value={reopenMotivo}
+                onChange={(e) => setReopenMotivo(e.target.value)}
+                placeholder="Ex: Faltou lançar um atestado que chegou depois"
+                rows={3}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none resize-none mb-4"
+              />
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { setReopeningEspelho(null); setReopenMotivo(''); }}
+                  disabled={reopenSaving}
+                  className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleConfirmReopenEspelho}
+                  disabled={reopenSaving || !reopenMotivo.trim()}
+                  className="flex-1 bg-amber-600 text-white py-3 rounded-lg font-bold hover:bg-amber-700 transition-all disabled:opacity-50"
+                >
+                  {reopenSaving ? 'Reabrindo...' : 'Reabrir mês'}
                 </button>
               </div>
             </div>
