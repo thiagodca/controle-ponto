@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v7.10-pills-inconsistencia-admin';
+const APP_VERSION = 'v7.11-fix-preselecao-inconsistencias';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -3121,11 +3121,16 @@ const ControlePonto = () => {
               <div className="grid grid-cols-2 gap-2.5">
                 <Tile
                   onClick={() => {
-                    const hojeNav = new Date();
-                    setInconsistencyMonth(String(hojeNav.getMonth() + 1).padStart(2, '0'));
-                    setInconsistencyYear(String(hojeNav.getFullYear()));
-                    if (resumo.inconsistenciasPorFuncionario.length > 0) {
-                      setInconsistencyUser(resumo.inconsistenciasPorFuncionario[0].userId);
+                    const afetados = getFuncionariosComInconsistenciaRecente();
+                    if (afetados.length === 1) {
+                      setInconsistencyUser(afetados[0].userId);
+                      setInconsistencyMonth(afetados[0].meses[0].mes);
+                      setInconsistencyYear(afetados[0].meses[0].ano);
+                    } else {
+                      const hojeNav = new Date();
+                      setInconsistencyUser('');
+                      setInconsistencyMonth(String(hojeNav.getMonth() + 1).padStart(2, '0'));
+                      setInconsistencyYear(String(hojeNav.getFullYear()));
                     }
                     setActiveView('inconsistencies');
                   }}
@@ -3138,11 +3143,15 @@ const ControlePonto = () => {
                 <Tile
                   onClick={() => {
                     const pendentes = correcoesPendentes.filter(c => c.status === 'pendente');
-                    if (pendentes.length > 0) {
-                      const hojeNav = new Date(pendentes[0].date + 'T00:00:00');
+                    const funcionariosUnicos = [...new Set(pendentes.map(c => c.userId))];
+                    if (funcionariosUnicos.length === 1) {
+                      const doFuncionario = pendentes.filter(c => c.userId === funcionariosUnicos[0]);
+                      const hojeNav = new Date(doFuncionario[0].date + 'T00:00:00');
                       setInconsistencyMonth(String(hojeNav.getMonth() + 1).padStart(2, '0'));
                       setInconsistencyYear(String(hojeNav.getFullYear()));
-                      setInconsistencyUser(pendentes[0].userId);
+                      setInconsistencyUser(funcionariosUnicos[0]);
+                    } else {
+                      setInconsistencyUser('');
                     }
                     setActiveView('inconsistencies');
                   }}
@@ -4316,7 +4325,19 @@ const ControlePonto = () => {
             ].map(({ view, label, Icon }) => (
               <button
                 key={view}
-                onClick={() => setActiveView(view)}
+                onClick={() => {
+                  if (view === 'inconsistencies') {
+                    const afetados = getFuncionariosComInconsistenciaRecente();
+                    if (afetados.length === 1) {
+                      setInconsistencyUser(afetados[0].userId);
+                      setInconsistencyMonth(afetados[0].meses[0].mes);
+                      setInconsistencyYear(afetados[0].meses[0].ano);
+                    } else {
+                      setInconsistencyUser('');
+                    }
+                  }
+                  setActiveView(view);
+                }}
                 className={`flex flex-col items-center justify-center gap-0.5 py-2 transition-colors ${
                   activeView === view ? 'text-indigo-600' : 'text-gray-400'
                 }`}
