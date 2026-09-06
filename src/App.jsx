@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v7.8-aceite-espelho-mes';
+const APP_VERSION = 'v7.9-pills-meses-com-pendencia';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -1448,6 +1448,21 @@ const ControlePonto = () => {
   // existem — usado para o indicador na aba "Minhas Pendências". Varre os
   // últimos 3 meses (atual + 2 anteriores) para não sumir com pendências
   // antigas ainda não resolvidas.
+  // Conta quantas inconsistências "acionáveis" (resolvíveis por horário e
+  // ainda sem correção aprovada/pendente) existem num mês específico.
+  const contarPendenciasDoMes = (mes, ano) => {
+    const resultado = generateInconsistencies(currentUser.id, mes, ano);
+    if (!resultado) return 0;
+    let total = 0;
+    resultado.inconsistencias.forEach(inc => {
+      const resolvivel = inc.status === 'incompleto' || inc.status === 'sem-registro';
+      if (!resolvivel) return;
+      const correcao = correcoesPendentes.find(c => c.userId === currentUser.id && c.date === inc.date);
+      if (!correcao || correcao.status === 'rejeitado') total++;
+    });
+    return total;
+  };
+
   const getMinhasPendenciasCount = () => {
     if (!currentUser || currentUser.profile !== 'employee') return 0;
     let total = 0;
@@ -1456,16 +1471,29 @@ const ControlePonto = () => {
       const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
       const mes = String(d.getMonth() + 1).padStart(2, '0');
       const ano = String(d.getFullYear());
-      const resultado = generateInconsistencies(currentUser.id, mes, ano);
-      if (!resultado) continue;
-      resultado.inconsistencias.forEach(inc => {
-        const resolvivel = inc.status === 'incompleto' || inc.status === 'sem-registro';
-        if (!resolvivel) return;
-        const correcao = correcoesPendentes.find(c => c.userId === currentUser.id && c.date === inc.date);
-        if (!correcao || correcao.status === 'rejeitado') total++;
-      });
+      total += contarPendenciasDoMes(mes, ano);
     }
     return total;
+  };
+
+  // Lista, para o filtro de "Minhas Pendências", quais dos últimos 3 meses
+  // têm pendência — vira as pills abaixo do seletor de mês/ano, pra não
+  // deixar o funcionário procurando mês a mês qual tem pendência.
+  const getMesesComPendencia = () => {
+    if (!currentUser || currentUser.profile !== 'employee') return [];
+    const nomesAbrev = ['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+    const base = new Date();
+    const meses = [];
+    for (let i = 0; i < 3; i++) {
+      const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
+      const mes = String(d.getMonth() + 1).padStart(2, '0');
+      const ano = String(d.getFullYear());
+      const count = contarPendenciasDoMes(mes, ano);
+      if (count > 0) {
+        meses.push({ mes, ano, count, label: `${nomesAbrev[parseInt(mes)]}/${ano}` });
+      }
+    }
+    return meses;
   };
 
   // ===== Aceite do espelho do mês (trava o mês) =====
@@ -2898,7 +2926,7 @@ const ControlePonto = () => {
               <h2 className="text-2xl font-bold text-gray-900 mb-2">Minhas Pendências</h2>
               <p className="text-sm text-gray-500 mb-6">Corrija dias com marcação incompleta. A correção fica pendente até o administrador aprovar.</p>
 
-              <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+              <div className="bg-white rounded-xl shadow-lg p-6 mb-3">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">Mês</label>
@@ -2923,6 +2951,32 @@ const ControlePonto = () => {
                   </div>
                 </div>
               </div>
+
+              {(() => {
+                const mesesComPendencia = getMesesComPendencia();
+                if (mesesComPendencia.length === 0) return null;
+                return (
+                  <div className="flex items-center gap-2 flex-wrap mb-6">
+                    <span className="text-xs text-gray-400">Tem pendência em:</span>
+                    {mesesComPendencia.map((m) => {
+                      const selecionado = m.mes === pendingMonth && m.ano === pendingYear;
+                      return (
+                        <button
+                          key={`${m.ano}-${m.mes}`}
+                          onClick={() => { setPendingMonth(m.mes); setPendingYear(m.ano); }}
+                          className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-colors ${
+                            selecionado
+                              ? 'bg-amber-500 text-white'
+                              : 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100'
+                          }`}
+                        >
+                          {m.label} ({m.count})
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
 
               {resultado && (
                 resultado.inconsistencias.length === 0 ? (
