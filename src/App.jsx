@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v7.9-pills-meses-com-pendencia';
+const APP_VERSION = 'v7.10-pills-inconsistencia-admin';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -2357,6 +2357,50 @@ const ControlePonto = () => {
       .filter(f => f.count > 0);
   };
 
+  // Agrega, para os últimos 3 meses, quais funcionários têm inconsistência
+  // e em quais meses — evita o admin ter que abrir funcionário por
+  // funcionário, mês por mês, só pra descobrir onde tem pendência.
+  const getFuncionariosComInconsistenciaRecente = () => {
+    const nomesAbrev = ['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+    const base = new Date();
+    const porFuncionario = {};
+    for (let i = 0; i < 3; i++) {
+      const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
+      const mes = d.getMonth() + 1;
+      const ano = d.getFullYear();
+      getInconsistencyCountsByMonth(mes, ano).forEach(r => {
+        if (!porFuncionario[r.userId]) {
+          porFuncionario[r.userId] = { userId: r.userId, userName: r.userName, total: 0, meses: [] };
+        }
+        porFuncionario[r.userId].total += r.count;
+        porFuncionario[r.userId].meses.push({
+          mes: String(mes).padStart(2, '0'), ano: String(ano), count: r.count, label: `${nomesAbrev[mes]}/${ano}`,
+        });
+      });
+    }
+    return Object.values(porFuncionario).sort((a, b) => b.total - a.total);
+  };
+
+  // Para o funcionário já selecionado na tela Inconsistências, lista os
+  // últimos 3 meses que têm alguma inconsistência (vira as pills abaixo do
+  // seletor, igual à tela "Minhas Pendências" do funcionário).
+  const getMesesComInconsistencia = (userId) => {
+    const nomesAbrev = ['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+    const base = new Date();
+    const meses = [];
+    for (let i = 0; i < 3; i++) {
+      const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
+      const mes = String(d.getMonth() + 1).padStart(2, '0');
+      const ano = String(d.getFullYear());
+      const resultado = generateInconsistencies(userId, mes, ano);
+      const count = resultado ? resultado.inconsistencias.length : 0;
+      if (count > 0) {
+        meses.push({ mes, ano, count, label: `${nomesAbrev[parseInt(mes)]}/${ano}` });
+      }
+    }
+    return meses;
+  };
+
   const getHomeSummary = () => {
     const hoje = new Date();
     const ano = hoje.getFullYear();
@@ -3712,25 +3756,38 @@ const ControlePonto = () => {
             </div>
 
             {!inconsistencyUser ? (() => {
-              const afetados = getInconsistencyCountsByMonth(parseInt(inconsistencyMonth), parseInt(inconsistencyYear));
+              const afetados = getFuncionariosComInconsistenciaRecente();
               return (
                 <div className="bg-white rounded-xl shadow-lg p-6">
                   {afetados.length === 0 ? (
                     <p className="text-center text-gray-500 py-2">
-                      ✅ Nenhuma inconsistência neste mês. Selecione um funcionário acima para conferir mesmo assim.
+                      ✅ Nenhuma inconsistência nos últimos 3 meses. Selecione um funcionário acima para conferir mesmo assim.
                     </p>
                   ) : (
                     <>
-                      <p className="text-sm text-gray-500 mb-3">Funcionários com inconsistências neste mês:</p>
+                      <p className="text-sm text-gray-500 mb-3">Funcionários com inconsistência nos últimos 3 meses:</p>
                       <div className="space-y-2">
                         {afetados.map(f => (
                           <button
                             key={f.userId}
-                            onClick={() => setInconsistencyUser(f.userId)}
-                            className="w-full flex items-center justify-between bg-red-50 border border-red-200 hover:bg-red-100 transition-colors rounded-lg px-4 py-3 text-left"
+                            onClick={() => {
+                              setInconsistencyUser(f.userId);
+                              setInconsistencyMonth(f.meses[0].mes);
+                              setInconsistencyYear(f.meses[0].ano);
+                            }}
+                            className="w-full bg-red-50 border border-red-200 hover:bg-red-100 transition-colors rounded-lg px-4 py-3 text-left"
                           >
-                            <span className="font-medium text-gray-900">{f.userName}</span>
-                            <span className="text-red-600 text-sm font-semibold">{f.count} {f.count > 1 ? 'inconsistências' : 'inconsistência'}</span>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className="font-medium text-gray-900">{f.userName}</span>
+                              <span className="text-red-600 text-sm font-semibold">{f.total} {f.total > 1 ? 'inconsistências' : 'inconsistência'}</span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {f.meses.map(m => (
+                                <span key={`${m.ano}-${m.mes}`} className="text-[11px] font-semibold bg-white border border-red-200 text-red-600 rounded-full px-2 py-0.5">
+                                  {m.label} ({m.count})
+                                </span>
+                              ))}
+                            </div>
                           </button>
                         ))}
                       </div>
@@ -3742,8 +3799,31 @@ const ControlePonto = () => {
               const resultado = generateInconsistencies();
               if (!resultado) return null;
               const nomesMeses = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+              const mesesComInconsistencia = getMesesComInconsistencia(inconsistencyUser);
               return (
-                <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+                <div>
+                  {mesesComInconsistencia.length > 0 && (
+                    <div className="flex items-center gap-2 flex-wrap mb-3">
+                      <span className="text-xs text-gray-400">Tem inconsistência em:</span>
+                      {mesesComInconsistencia.map((m) => {
+                        const selecionado = m.mes === inconsistencyMonth && m.ano === inconsistencyYear;
+                        return (
+                          <button
+                            key={`${m.ano}-${m.mes}`}
+                            onClick={() => { setInconsistencyMonth(m.mes); setInconsistencyYear(m.ano); }}
+                            className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-colors ${
+                              selecionado
+                                ? 'bg-red-500 text-white'
+                                : 'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100'
+                            }`}
+                          >
+                            {m.label} ({m.count})
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div className="bg-white rounded-xl shadow-lg overflow-hidden">
                   <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-6 text-white">
                     <h3 className="text-2xl font-bold mb-2 flex items-center gap-2">
                       <AlertTriangle className="w-6 h-6" />
@@ -3826,6 +3906,7 @@ const ControlePonto = () => {
                       </div>
                     )}
                   </div>
+                </div>
                 </div>
               );
             })()}
