@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v7.11-fix-preselecao-inconsistencias';
+const APP_VERSION = 'v7.12-alerta-espelho-para-aceitar';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -1496,6 +1496,28 @@ const ControlePonto = () => {
     return meses;
   };
 
+  // Lista, para o funcionário logado, quais meses já encerrados ainda não
+  // foram aceitos e já estão prontos pra isso (sem nenhuma pendência em
+  // aberto) — vira o badge e as pills de "Meu Espelho".
+  const getMesesEspelhoParaAceitar = () => {
+    if (!currentUser || currentUser.profile !== 'employee') return [];
+    const nomesAbrev = ['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+    const base = new Date();
+    const meses = [];
+    for (let i = 1; i <= 3; i++) {
+      const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
+      const mes = String(d.getMonth() + 1).padStart(2, '0');
+      const ano = String(d.getFullYear());
+      if (getAceite(currentUser.id, mes, ano)) continue; // já aceito
+      const resultado = generateInconsistencies(currentUser.id, mes, ano);
+      const count = resultado ? resultado.inconsistencias.length : 0;
+      if (count === 0) {
+        meses.push({ mes, ano, label: `${nomesAbrev[parseInt(mes)]}/${ano}` });
+      }
+    }
+    return meses.reverse(); // do mais antigo pro mais recente, pra aceitar em ordem
+  };
+
   // ===== Aceite do espelho do mês (trava o mês) =====
 
   const getAceite = (userId, mes, ano) =>
@@ -2786,6 +2808,32 @@ const ControlePonto = () => {
                   </div>
                 </div>
               </div>
+
+              {(() => {
+                const espelhosParaAceitar = getMesesEspelhoParaAceitar();
+                if (espelhosParaAceitar.length === 0) return null;
+                return (
+                  <div className="flex items-center gap-2 flex-wrap mb-6">
+                    <span className="text-xs text-gray-400">Aguardando seu aceite:</span>
+                    {espelhosParaAceitar.map((m) => {
+                      const selecionado = m.mes === myReportMonth && m.ano === myReportYear;
+                      return (
+                        <button
+                          key={`${m.ano}-${m.mes}`}
+                          onClick={() => { setMyReportMonth(m.mes); setMyReportYear(m.ano); }}
+                          className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-colors ${
+                            selecionado
+                              ? 'bg-emerald-500 text-white'
+                              : 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
+                          }`}
+                        >
+                          {m.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
 
               {report && (
                 <div>
@@ -4353,17 +4401,24 @@ const ControlePonto = () => {
       {/* Barra de navegação inferior (funcionário) */}
       {currentUser?.profile === 'employee' && (() => {
         const pendenciasCount = getMinhasPendenciasCount();
+        const espelhosParaAceitar = getMesesEspelhoParaAceitar();
         return (
         <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-40 pb-[env(safe-area-inset-bottom)]">
           <div className="max-w-7xl mx-auto grid grid-cols-3">
             {[
               { view: 'clock', label: 'Registrar Ponto', Icon: Clock },
-              { view: 'myreport', label: 'Meu Espelho', Icon: FileText },
+              { view: 'myreport', label: 'Meu Espelho', Icon: FileText, badge: espelhosParaAceitar.length },
               { view: 'mypendencias', label: 'Pendências', Icon: ClipboardList, badge: pendenciasCount },
             ].map(({ view, label, Icon, badge }) => (
               <button
                 key={view}
-                onClick={() => setActiveView(view)}
+                onClick={() => {
+                  if (view === 'myreport' && espelhosParaAceitar.length > 0) {
+                    setMyReportMonth(espelhosParaAceitar[0].mes);
+                    setMyReportYear(espelhosParaAceitar[0].ano);
+                  }
+                  setActiveView(view);
+                }}
                 className={`relative flex flex-col items-center justify-center gap-0.5 py-2 transition-colors ${
                   activeView === view ? 'text-indigo-600' : 'text-gray-400'
                 }`}
