@@ -7,7 +7,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v7.12-alerta-espelho-para-aceitar';
+const APP_VERSION = 'v7.13-recarrega-dados-no-login';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -577,6 +577,14 @@ const ControlePonto = () => {
       setActiveView(user.profile === 'admin' ? 'home' : 'clock');
       setLoginEmail('');
       setLoginPassword('');
+      // O carregamento inicial (loadData) só roda uma vez, quando o app é
+      // aberto. Se o aparelho ficou parado na tela de login por um tempo
+      // antes de alguém entrar, os dados em memória podem já estar
+      // desatualizados — recarrega tudo de novo neste momento, pra garantir
+      // que quem acabou de entrar já vê o estado mais recente.
+      if (navigator.onLine) {
+        loadData();
+      }
     };
 
     const mensagemFalhaOffline = (motivo) => {
