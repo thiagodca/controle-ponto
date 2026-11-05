@@ -1,0 +1,5 @@
+{
+  "crons": [
+    { "path": "/api/cron-inconsistencias", "schedule": "0 21 * * *" }
+  ]
+}

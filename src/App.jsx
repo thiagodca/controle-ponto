@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree, Home, CalendarClock, Eye, EyeOff, HandCoins, ClipboardList, CheckCircle2, XCircle, Hourglass, Lock, Unlock, ShieldCheck } from 'lucide-react';
+import { Clock, Users, FileText, LogOut, LogIn, UserPlus, Edit2, Trash2, Save, X, Plus, Search, Download, MapPin, AlertTriangle, Wrench, Stethoscope, PartyPopper, Palmtree, Home, CalendarClock, Eye, EyeOff, HandCoins, ClipboardList, CheckCircle2, XCircle, Hourglass, Lock, Unlock, ShieldCheck, Mail } from 'lucide-react';
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { JORNADA_DIARIA_HORAS, getDayMetrics, formatHoras, getDiaSemana, calcularInconsistencias } from './lib/pontoCalc.js';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v7.13-recarrega-dados-no-login';
+const APP_VERSION = 'v7.14-aviso-email-inconsistencias';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -350,6 +351,7 @@ const ControlePonto = () => {
   const [reaberturasEspelho, setReaberturasEspelho] = useState([]); // [{id, userId, month, year, motivo, reopenedBy, reopenedByName, previousAcceptedAt, createdAt}] — histórico de reaberturas de mês já aceito
   const [vacations, setVacations] = useState([]); // [{id, userId, userName, startDate, endDate}]
   const [overtimeAlerts, setOvertimeAlerts] = useState([]); // [{id, userId, userName, type, thresholdHours}]
+  const [inconsistencyAlerts, setInconsistencyAlerts] = useState([]); // [{id, userId, userName, threshold}] — avisos por e-mail de inconsistências
   
   // Estado para relatório — mês e ano do relatório vêm pré-selecionados com o mês atual
   const nowParaDefaults = new Date();
@@ -498,6 +500,21 @@ const ControlePonto = () => {
         thresholdHours: parseFloat(a.threshold_hours),
       }));
 
+      // Recurso novo: se a tabela ainda não existir no banco (SQL não rodado),
+      // o app não pode parar de carregar por causa disso — só fica sem o recurso.
+      let alertasInconsDb = [];
+      try {
+        alertasInconsDb = (await supabaseRequest('alertas_inconsistencia', 'GET', { query: '?select=*' })) || [];
+      } catch (e) {
+        console.warn('Avisos de inconsistência indisponíveis (tabela ainda não criada?):', e.message);
+      }
+      const inconsistencyAlertsMapeados = alertasInconsDb.map(a => ({
+        id: a.id,
+        userId: a.user_id,
+        userName: usuariosMapeados.find(u => u.id === a.user_id)?.name || '(usuário removido)',
+        threshold: parseInt(a.threshold, 10),
+      }));
+
       setUsers(usuariosMapeados);
       setTimeRecords(registrosMapeados);
       setHolidays(holidaysMapeados);
@@ -508,6 +525,7 @@ const ControlePonto = () => {
       setReaberturasEspelho(reaberturasMapeadas);
       setVacations(feriasMapeadas);
       setOvertimeAlerts(overtimeAlertsMapeados);
+      setInconsistencyAlerts(inconsistencyAlertsMapeados);
       setStorageAvailable(true);
 
       // Guarda uma cópia local de tudo, para permitir abrir o app e bater
@@ -524,6 +542,7 @@ const ControlePonto = () => {
         reaberturasEspelho: reaberturasMapeadas,
         vacations: feriasMapeadas,
         overtimeAlerts: overtimeAlertsMapeados,
+        inconsistencyAlerts: inconsistencyAlertsMapeados,
       });
     } catch (error) {
       console.error('Erro ao carregar dados do banco:', error);
@@ -544,6 +563,7 @@ const ControlePonto = () => {
         setReaberturasEspelho(snapshot.reaberturasEspelho || []);
         setVacations(snapshot.vacations || []);
         setOvertimeAlerts(snapshot.overtimeAlerts || []);
+        setInconsistencyAlerts(snapshot.inconsistencyAlerts || []);
         setStorageAvailable(true);
         setLoadError('');
       } else {
@@ -1128,155 +1148,7 @@ const ControlePonto = () => {
     setTimeout(() => setClockMessage(null), 6000);
   };
 
-  // Converte "HH:MM:SS" em minutos desde a meia-noite, para facilitar cálculos
-  const timeToMinutes = (timeStr) => {
-    if (!timeStr) return null;
-    const [h, m, s] = timeStr.split(':').map(Number);
-    return h * 60 + m + (s || 0) / 60;
-  };
-
-  // Calcula as métricas de um único dia (entrada, intervalo, saída, horas
-  // trabalhadas e horas extras) a partir dos registros de ponto daquele dia.
-  //
-  // Regras assumidas (combinadas com o usuário):
-  // - 2 marcações no dia = entrada + saída, sem intervalo marcado → assume-se
-  //   1 hora de intervalo automaticamente.
-  // - 4 marcações no dia = entrada, início do intervalo, fim do intervalo, saída.
-  // - 1 ou 3 marcações = dia incompleto (falta alguma marcação); não entra no
-  //   somatório de horas.
-  // - Dia sem nenhuma marcação = não trabalhado; não entra no somatório.
-  const JORNADA_DIARIA_HORAS = 8;
-
-  const getDayMetrics = (dateStr, allRecords, atestado = null, feriado = null, ferias = null, abono = null) => {
-    const dayRecords = allRecords
-      .filter(r => r.date === dateStr)
-      .sort((a, b) => a.time.localeCompare(b.time));
-
-    const punches = dayRecords.map(r => r.time);
-    const addresses = dayRecords.map(r => r.address);
-    const n = punches.length;
-
-    let entrada = null, inicioIntervalo = null, fimIntervalo = null, saida = null;
-    let entradaAddress = null, inicioIntervaloAddress = null, fimIntervaloAddress = null, saidaAddress = null;
-    let horasTrabalhadas = null;
-    let status = 'sem-registro';
-
-    if (n === 0) {
-      status = 'sem-registro';
-    } else if (n === 1) {
-      entrada = punches[0];
-      entradaAddress = addresses[0];
-      status = 'incompleto';
-    } else if (n === 2) {
-      entrada = punches[0];
-      saida = punches[1];
-      entradaAddress = addresses[0];
-      saidaAddress = addresses[1];
-      const totalMin = timeToMinutes(saida) - timeToMinutes(entrada) - 60; // assume 1h de intervalo
-      horasTrabalhadas = Math.max(0, totalMin) / 60;
-      status = 'completo';
-    } else if (n === 3) {
-      entrada = punches[0];
-      inicioIntervalo = punches[1];
-      fimIntervalo = punches[2];
-      entradaAddress = addresses[0];
-      inicioIntervaloAddress = addresses[1];
-      fimIntervaloAddress = addresses[2];
-      status = 'incompleto'; // falta a marcação de saída
-    } else {
-      entrada = punches[0];
-      inicioIntervalo = punches[1];
-      fimIntervalo = punches[2];
-      saida = punches[3];
-      entradaAddress = addresses[0];
-      inicioIntervaloAddress = addresses[1];
-      fimIntervaloAddress = addresses[2];
-      saidaAddress = addresses[3];
-      const minTrabalhados = (timeToMinutes(inicioIntervalo) - timeToMinutes(entrada)) +
-                              (timeToMinutes(saida) - timeToMinutes(fimIntervalo));
-      horasTrabalhadas = Math.max(0, minTrabalhados) / 60;
-      status = 'completo';
-    }
-
-    // Regras de atestado médico:
-    // - Se há lançamento (2 ou 4 marcações = status "completo"), soma-se as
-    //   horas do atestado às horas realmente trabalhadas.
-    // - Se não há nenhuma marcação ("sem-registro"), as horas trabalhadas do
-    //   dia passam a ser as horas do atestado (cobertura total ou parcial).
-    // - Se há apenas 1 ou 3 marcações ("incompleto"), o atestado não altera
-    //   nada — o dia continua incompleto por falta de marcação de saída/etc.
-    if (atestado) {
-      if (status === 'completo') {
-        horasTrabalhadas = (horasTrabalhadas || 0) + atestado.hours;
-      } else if (status === 'sem-registro') {
-        status = 'completo';
-        horasTrabalhadas = atestado.hours;
-      }
-    }
-
-    let horasExtras = horasTrabalhadas !== null ? horasTrabalhadas - JORNADA_DIARIA_HORAS : null;
-
-    // Havendo atestado médico (de qualquer quantidade de horas), a hora extra
-    // do dia nunca fica negativa — a ausência parcial está justificada.
-    if (atestado && horasExtras !== null) {
-      horasExtras = Math.max(0, horasExtras);
-    }
-
-    // Regras de horas abonadas: diferente do atestado, o abono NÃO soma às
-    // horas trabalhadas exibidas (o total trabalhado continua sendo o que o
-    // colaborador de fato bateu). O abono só evita que a falta gere hora
-    // extra negativa, abatendo exatamente o que faltou — se o abono for maior
-    // que a falta do dia, o excedente é descartado (nunca gera crédito
-    // positivo).
-    let abonoAplicado = 0;
-    if (abono && horasExtras !== null && horasExtras < 0) {
-      const falta = -horasExtras;
-      abonoAplicado = Math.min(abono.hours, falta);
-      horasExtras = horasExtras + abonoAplicado;
-    }
-
-    // Nova inconsistência: mesmo com atestado, se o total de horas (lançamento
-    // + atestado, ou só atestado quando não há lançamento) ficar abaixo da
-    // jornada diária, ainda é uma inconsistência — falta alguma coisa explicar.
-    const atestadoInsuficiente = !!(atestado && status === 'completo' && horasTrabalhadas < JORNADA_DIARIA_HORAS);
-
-    // Mesma ideia para abono: se o abono não foi suficiente para cobrir toda
-    // a falta do dia, ainda sobra hora extra negativa — sinaliza para o admin
-    // revisar (o abono parcial já foi aplicado acima, mas não resolveu tudo).
-    const abonoInsuficiente = !!(abono && status === 'completo' && horasExtras !== null && horasExtras < 0);
-
-    const isManuallyAdjusted = dayRecords.some(r => r.manuallyAdjusted);
-    const adjustmentReason = dayRecords.find(r => r.adjustmentReason)?.adjustmentReason || null;
-
-    return {
-      date: dateStr, entrada, inicioIntervalo, fimIntervalo, saida,
-      entradaAddress, inicioIntervaloAddress, fimIntervaloAddress, saidaAddress,
-      horasTrabalhadas, horasExtras, status, isManuallyAdjusted, adjustmentReason,
-      temAtestado: !!atestado,
-      atestadoHoras: atestado ? atestado.hours : null,
-      atestadoJustificativa: atestado ? atestado.justification : null,
-      atestadoInsuficiente,
-      temAbono: !!abono,
-      abonoHoras: abono ? abono.hours : null,
-      abonoJustificativa: abono ? abono.justification : null,
-      abonoInsuficiente,
-      isHoliday: !!feriado,
-      holidayDescription: feriado ? feriado.description : null,
-      isVacation: !!ferias,
-      vacationRange: ferias ? { start: ferias.startDate, end: ferias.endDate } : null,
-    };
-  };
-
   const formatHoraCurta = (timeStr) => timeStr ? timeStr.substring(0, 5) : '—';
-
-  const formatHoras = (valor) => {
-    if (valor === null || valor === undefined) return '—';
-    const sinal = valor < 0 ? '-' : '';
-    const abs = Math.abs(valor);
-    const h = Math.floor(abs);
-    const m = Math.round((abs - h) * 60);
-    return `${sinal}${h}h${m.toString().padStart(2, '0')}`;
-  };
 
   // Função para gerar relatório: uma linha para cada dia do mês/ano selecionado
   const generateReportFor = (userId, mesStr, anoStr) => {
@@ -1407,46 +1279,16 @@ const ControlePonto = () => {
     if (!uid || !mesSel || !anoSel) return null;
 
     const user = users.find(u => u.id === uid);
-    const userRecords = timeRecords.filter(r => r.userId === uid);
-    const userAtestados = medicalCertificates.filter(a => a.userId === uid);
-    const atestadoPorData = Object.fromEntries(userAtestados.map(a => [a.date, a]));
-    const userAbonos = excusedHours.filter(a => a.userId === uid);
-    const abonoPorData = Object.fromEntries(userAbonos.map(a => [a.date, a]));
-
-    const ano = parseInt(anoSel);
-    const mes = parseInt(mesSel);
-    const diasNoMes = new Date(ano, mes, 0).getDate();
-
     const hoje = new Date();
     const hojeStr = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
 
-    const inconsistencias = [];
-    for (let dia = 1; dia <= diasNoMes; dia++) {
-      const dateStr = `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
-      if (dateStr >= hojeStr) continue; // ignora hoje e datas futuras
-      if (holidays.some(h => h.date === dateStr)) continue; // dia marcado como feriado — resolvido
-      if (isDateInVacation(uid, dateStr)) continue; // dia de férias — não é inconsistência
-
-      const metrics = getDayMetrics(dateStr, userRecords, atestadoPorData[dateStr] || null, null, null, abonoPorData[dateStr] || null);
-      const diaSemana = getDiaSemana(dateStr);
-
-      if (metrics.status === 'incompleto') {
-        const motivo = metrics.saida === null && metrics.fimIntervalo === null
-          ? 'Apenas 1 marcação registrada (entrada) — faltam início/fim do intervalo e a saída'
-          : '3 marcações registradas (entrada, início e fim do intervalo) — falta a saída';
-        inconsistencias.push({ ...metrics, diaSemana, motivo });
-      } else if (metrics.atestadoInsuficiente) {
-        const motivo = metrics.entrada
-          ? `Atestado de ${metrics.atestadoHoras}h somado às marcações totaliza apenas ${formatHoras(metrics.horasTrabalhadas)} — menos que a jornada de ${JORNADA_DIARIA_HORAS}h`
-          : `Atestado de ${metrics.atestadoHoras}h não cobre a jornada de ${JORNADA_DIARIA_HORAS}h e não há nenhuma marcação de ponto`;
-        inconsistencias.push({ ...metrics, diaSemana, motivo });
-      } else if (metrics.abonoInsuficiente) {
-        const motivo = `Abono de ${metrics.abonoHoras}h não cobre toda a falta do dia — ainda restam ${formatHoras(-metrics.horasExtras)} não justificadas`;
-        inconsistencias.push({ ...metrics, diaSemana, motivo });
-      } else if (metrics.status === 'sem-registro' && !diaSemana.isFimDeSemana) {
-        inconsistencias.push({ ...metrics, diaSemana, motivo: 'Dia útil sem nenhuma marcação de ponto' });
-      }
-    }
+    // A regra em si vive em src/lib/pontoCalc.js (compartilhada com o aviso
+    // diário por e-mail do servidor).
+    const inconsistencias = calcularInconsistencias({
+      userId: uid, mes: parseInt(mesSel), ano: parseInt(anoSel), hojeStr,
+      registros: timeRecords, atestados: medicalCertificates, abonos: excusedHours,
+      feriados: holidays, ferias: vacations,
+    });
 
     return { user, inconsistencias };
   };
@@ -2264,6 +2106,93 @@ const ControlePonto = () => {
     }
   };
 
+  // ===== Avisos de inconsistência por e-mail =====
+  // O envio em si é feito no servidor (api/cron-inconsistencias.js, todo dia
+  // por volta das 18h). Aqui o admin só configura QUEM é monitorado e a
+  // PARTIR DE QUANTAS inconsistências em aberto o e-mail deve ser disparado.
+  const [showInconsAlertForm, setShowInconsAlertForm] = useState(false);
+  const [inconsAlertEditing, setInconsAlertEditing] = useState(null); // aviso em edição (null = criando novo)
+  const [inconsAlertUserId, setInconsAlertUserId] = useState('');
+  const [inconsAlertThreshold, setInconsAlertThreshold] = useState('');
+  const [inconsAlertError, setInconsAlertError] = useState('');
+  const [inconsAlertSaving, setInconsAlertSaving] = useState(false);
+  const [confirmDeleteInconsAlert, setConfirmDeleteInconsAlert] = useState(null);
+
+  // Total de inconsistências em aberto de um funcionário nos últimos 3 meses
+  // (mês atual + 2 anteriores) — mesma janela usada pelo servidor no e-mail.
+  const contarInconsistenciasRecentes = (userId) =>
+    getMesesComInconsistencia(userId).reduce((soma, m) => soma + m.count, 0);
+
+  const resetInconsAlertForm = () => {
+    setShowInconsAlertForm(false);
+    setInconsAlertEditing(null);
+    setInconsAlertUserId('');
+    setInconsAlertThreshold('');
+    setInconsAlertError('');
+  };
+
+  const openNewInconsAlert = () => {
+    setInconsAlertEditing(null);
+    setInconsAlertUserId('');
+    setInconsAlertThreshold('');
+    setInconsAlertError('');
+    setShowInconsAlertForm(true);
+  };
+
+  const openEditInconsAlert = (alerta) => {
+    setInconsAlertEditing(alerta);
+    setInconsAlertUserId(alerta.userId);
+    setInconsAlertThreshold(String(alerta.threshold));
+    setInconsAlertError('');
+    setShowInconsAlertForm(true);
+  };
+
+  const handleSaveInconsAlert = async () => {
+    setInconsAlertError('');
+    const limite = Number(inconsAlertThreshold);
+    if (!inconsAlertUserId || !Number.isInteger(limite) || limite < 1) {
+      setInconsAlertError('Selecione o funcionário e informe um número inteiro de inconsistências (1 ou mais).');
+      return;
+    }
+    setInconsAlertSaving(true);
+    try {
+      const usuarioAlvo = users.find(u => u.id === inconsAlertUserId);
+      if (inconsAlertEditing) {
+        await supabaseRequest('alertas_inconsistencia', 'PATCH', {
+          query: `?id=eq.${inconsAlertEditing.id}`,
+          body: { threshold: limite },
+        });
+        setInconsistencyAlerts(prev => prev.map(a => a.id === inconsAlertEditing.id ? { ...a, threshold: limite } : a));
+      } else {
+        const inserido = await supabaseRequest('alertas_inconsistencia', 'POST', {
+          body: { user_id: inconsAlertUserId, threshold: limite },
+        });
+        const novo = inserido[0];
+        setInconsistencyAlerts(prev => [...prev, {
+          id: novo.id, userId: novo.user_id, userName: usuarioAlvo.name, threshold: parseInt(novo.threshold, 10),
+        }]);
+      }
+      resetInconsAlertForm();
+    } catch (error) {
+      console.error('Erro ao salvar aviso de inconsistência:', error);
+      setInconsAlertError('Erro ao salvar: ' + error.message);
+    } finally {
+      setInconsAlertSaving(false);
+    }
+  };
+
+  const handleDeleteInconsAlert = async () => {
+    if (!confirmDeleteInconsAlert) return;
+    try {
+      await supabaseRequest('alertas_inconsistencia', 'DELETE', { query: `?id=eq.${confirmDeleteInconsAlert.id}` });
+      setInconsistencyAlerts(prev => prev.filter(a => a.id !== confirmDeleteInconsAlert.id));
+      setConfirmDeleteInconsAlert(null);
+    } catch (error) {
+      console.error('Erro ao excluir aviso de inconsistência:', error);
+      alert('Não foi possível excluir: ' + error.message);
+    }
+  };
+
   // Soma as horas extras de uma lista de datas para um funcionário, usando as
   // mesmas regras do relatório (atestado, feriado, férias já consideradas).
   const somarHorasExtrasDatas = (userId, datas) => {
@@ -2463,18 +2392,6 @@ const ControlePonto = () => {
     proximasMudancasFerias.sort((a, b) => a.data - b.data);
 
     return { totalInconsistencias, inconsistenciasPorFuncionario, funcionariosDeFerias, proximasMudancasFerias, totalFuncionarios: funcionarios.length };
-  };
-
-  const NOMES_DIAS_SEMANA = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
-
-  // Retorna o nome do dia da semana e se é fim de semana, a partir de "YYYY-MM-DD".
-  // Usa os componentes da data diretamente (em vez de new Date(dateStr) puro)
-  // para evitar problemas de fuso horário que deslocariam o dia da semana.
-  const getDiaSemana = (dateStr) => {
-    const [year, month, day] = dateStr.split('-').map(Number);
-    const data = new Date(year, month - 1, day);
-    const indice = data.getDay(); // 0 = domingo, 6 = sábado
-    return { nome: NOMES_DIAS_SEMANA[indice], isFimDeSemana: indice === 0 || indice === 6 };
   };
 
   // Renderização da tela de login
@@ -3149,6 +3066,7 @@ const ControlePonto = () => {
           const hoje = new Date();
           const nomesMeses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
           const alertasDisparados = getAlertsWithStatus().filter(a => a.disparado);
+          const avisosInconsAtingidos = inconsistencyAlerts.filter(a => contarInconsistenciasRecentes(a.userId) >= a.threshold);
 
           const Tile = ({ onClick, Icon, iconColor, value, label, alerta, span2 }) => (
             <button
@@ -3256,6 +3174,14 @@ const ControlePonto = () => {
                   value={alertasDisparados.length}
                   label="Alertas de hora extra"
                   alerta={alertasDisparados.length > 0}
+                />
+                <Tile
+                  onClick={() => setActiveView('inconsistencyAlerts')}
+                  Icon={Mail}
+                  iconColor="text-indigo-500"
+                  value={inconsistencyAlerts.length}
+                  label="Avisos por e-mail"
+                  alerta={avisosInconsAtingidos.length > 0}
                 />
                 <Tile
                   onClick={() => setActiveView('users')}
@@ -4353,6 +4279,189 @@ const ControlePonto = () => {
                         </button>
                         <button
                           onClick={handleDeleteAlert}
+                          className="flex-1 bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 transition-all"
+                        >
+                          Excluir
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* Tela de Avisos de inconsistência por e-mail (admin) */}
+        {activeView === 'inconsistencyAlerts' && currentUser?.profile === 'admin' && (() => {
+          const monitorados = inconsistencyAlerts.map(a => {
+            const atuais = contarInconsistenciasRecentes(a.userId);
+            return { ...a, atuais, atingido: atuais >= a.threshold };
+          });
+          const jaConfigurados = new Set(inconsistencyAlerts.map(a => a.userId));
+          const funcionariosDisponiveis = users.filter(u => u.profile === 'employee' && !jaConfigurados.has(u.id));
+          return (
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-2xl font-bold text-gray-900">Avisos por E-mail</h2>
+                <button
+                  onClick={openNewInconsAlert}
+                  disabled={funcionariosDisponiveis.length === 0}
+                  className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium disabled:opacity-50"
+                >
+                  <Plus className="w-5 h-5" />
+                  Novo
+                </button>
+              </div>
+
+              <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 mb-4 text-sm text-indigo-900">
+                <div className="flex items-start gap-2">
+                  <Mail className="w-5 h-5 flex-shrink-0 mt-0.5 text-indigo-500" />
+                  <p>
+                    Todo dia, por volta das 18h, o sistema confere as inconsistências dos últimos 3 meses e envia um e-mail
+                    para <strong>{currentUser.email}</strong> (seu e-mail de login) com os detalhes dos funcionários abaixo
+                    que atingirem o limite. Enquanto o limite continuar atingido, o aviso se repete todo dia.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {monitorados.map(alerta => (
+                  <div
+                    key={alerta.id}
+                    className={`bg-white rounded-xl shadow-sm border p-4 flex items-center gap-3 ${
+                      alerta.atingido ? 'border-red-200' : 'border-gray-100'
+                    }`}
+                  >
+                    <button
+                      onClick={() => openEditInconsAlert(alerta)}
+                      className="flex items-center gap-3 min-w-0 flex-1 text-left"
+                    >
+                      <div className={`w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 ${
+                        alerta.atingido ? 'bg-red-100' : 'bg-gray-100'
+                      }`}>
+                        <Mail className={`w-5 h-5 ${alerta.atingido ? 'text-red-500' : 'text-gray-400'}`} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-gray-900 truncate">{alerta.userName}</p>
+                        <p className="text-sm text-gray-500">
+                          Avisar a partir de {alerta.threshold} {alerta.threshold === 1 ? 'inconsistência' : 'inconsistências'}
+                        </p>
+                        <p className={`text-sm font-semibold mt-0.5 ${alerta.atingido ? 'text-red-600' : 'text-gray-400'}`}>
+                          {alerta.atingido ? '⚠️ ' : ''}{alerta.atuais} em aberto{alerta.atingido ? ' — aviso será enviado' : ''}
+                        </p>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => setConfirmDeleteInconsAlert(alerta)}
+                      className="p-2.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex-shrink-0"
+                      title="Excluir aviso"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  </div>
+                ))}
+
+                {monitorados.length === 0 && (
+                  <div className="bg-white rounded-xl shadow-sm p-8 text-center text-gray-500">
+                    Nenhum funcionário monitorado. Toque em "Novo" para escolher quem você quer acompanhar.
+                  </div>
+                )}
+              </div>
+
+              {/* Modal de novo aviso / edição */}
+              {showInconsAlertForm && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+                  <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-md max-h-[90vh] overflow-y-auto">
+                    <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+                      <h3 className="text-lg font-bold text-gray-900">
+                        {inconsAlertEditing ? 'Editar aviso' : 'Novo aviso por e-mail'}
+                      </h3>
+                      <button onClick={resetInconsAlertForm} className="p-1 text-gray-400 hover:text-gray-600">
+                        <X className="w-6 h-6" />
+                      </button>
+                    </div>
+                    <div className="p-5 space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Funcionário</label>
+                        <select
+                          value={inconsAlertUserId}
+                          onChange={(e) => setInconsAlertUserId(e.target.value)}
+                          disabled={!!inconsAlertEditing}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none disabled:bg-gray-100 disabled:text-gray-500"
+                        >
+                          <option value="">Selecione...</option>
+                          {(inconsAlertEditing ? users.filter(u => u.id === inconsAlertEditing.userId) : funcionariosDisponiveis).map(user => (
+                            <option key={user.id} value={user.id}>{user.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Número de inconsistências para disparar o e-mail
+                        </label>
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          step="1"
+                          min="1"
+                          value={inconsAlertThreshold}
+                          onChange={(e) => setInconsAlertThreshold(e.target.value)}
+                          placeholder="Ex: 3"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none"
+                        />
+                        <p className="text-xs text-gray-400 mt-1">
+                          O e-mail é enviado quando o funcionário tiver esse número (ou mais) de inconsistências em aberto.
+                        </p>
+                      </div>
+
+                      {inconsAlertError && (
+                        <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
+                          {inconsAlertError}
+                        </div>
+                      )}
+
+                      <div className="flex gap-3 pt-2">
+                        <button
+                          onClick={resetInconsAlertForm}
+                          className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          onClick={handleSaveInconsAlert}
+                          disabled={inconsAlertSaving}
+                          className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-lg font-bold hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50"
+                        >
+                          {inconsAlertSaving ? 'Salvando...' : 'Salvar'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Modal de confirmação de exclusão */}
+              {confirmDeleteInconsAlert && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+                  <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-sm">
+                    <div className="p-6 text-center">
+                      <div className="w-14 h-14 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <Trash2 className="w-7 h-7 text-red-600" />
+                      </div>
+                      <h3 className="text-lg font-bold text-gray-900 mb-2">Parar de avisar?</h3>
+                      <p className="text-gray-500 text-sm mb-6">
+                        Você deixará de receber e-mails sobre as inconsistências de <strong>{confirmDeleteInconsAlert.userName}</strong>.
+                      </p>
+                      <div className="flex gap-3">
+                        <button
+                          onClick={() => setConfirmDeleteInconsAlert(null)}
+                          className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          onClick={handleDeleteInconsAlert}
                           className="flex-1 bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 transition-all"
                         >
                           Excluir

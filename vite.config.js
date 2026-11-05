@@ -35,6 +35,9 @@ export default defineConfig({
         // sobre o que é "dado confiável" vs "última cópia conhecida".
         globPatterns: ['**/*.{js,css,html,svg,png,ico}'],
         navigateFallback: '/index.html',
+        // Endereços /api/* são funções de servidor (ex.: aviso diário por e-mail),
+        // não telas do app — não podem cair no fallback do service worker.
+        navigateFallbackDenylist: [/^\/api\//],
         cleanupOutdatedCaches: true,
       },
       devOptions: {
