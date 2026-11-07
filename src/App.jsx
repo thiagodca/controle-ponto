@@ -8,7 +8,7 @@ import autoTable from 'jspdf-autotable';
 import { JORNADA_DIARIA_HORAS, getDayMetrics, formatHoras, getDiaSemana, calcularInconsistencias } from './lib/pontoCalc.js';
 
 // Identificador de versão — usado para confirmar visualmente qual versão do código está rodando
-const APP_VERSION = 'v7.14-aviso-email-inconsistencias';
+const APP_VERSION = 'v7.15-abono-integral-sem-marcacoes';
 
 // Ícone customizado do marcador (evita o bug clássico do Leaflet + Vite com os
 // ícones padrão, que não carregam corretamente após o build).
@@ -1501,12 +1501,14 @@ const ControlePonto = () => {
 
     const atestadoHorasNum = resolveTemAtestado ? parseFloat(resolveAtestadoHoras) : null;
     const abonoHorasNum = resolveTemAbono ? parseFloat(resolveAbonoHoras) : null;
-    const coberturaIntegral = resolveTemAtestado && atestadoHorasNum >= JORNADA_DIARIA_HORAS;
+    const coberturaIntegral =
+      (resolveTemAtestado && atestadoHorasNum >= JORNADA_DIARIA_HORAS) ||
+      (resolveTemAbono && abonoHorasNum >= JORNADA_DIARIA_HORAS);
 
-    // Entrada e saída só podem ficar em branco quando o atestado cobre a
-    // jornada inteira (dia sem nenhuma marcação, justificado integralmente).
+    // Entrada e saída só podem ficar em branco quando atestado ou abono cobrem
+    // a jornada inteira (dia sem nenhuma marcação, justificado integralmente).
     if (!coberturaIntegral && (!resolveEntrada || !resolveSaida)) {
-      setResolveError('Informe entrada e saída (só é possível deixar em branco se o atestado cobrir a jornada inteira de 8h).');
+      setResolveError(`Informe entrada e saída (só é possível deixar em branco se o atestado ou o abono cobrir a jornada inteira de ${JORNADA_DIARIA_HORAS}h).`);
       return;
     }
 
@@ -4700,7 +4702,7 @@ const ControlePonto = () => {
                         className="w-full px-3 py-2 border border-emerald-200 rounded-lg focus:border-emerald-400 focus:outline-none bg-white"
                       />
                       <p className="text-xs text-emerald-600 mt-1">
-                        O abono não soma ao total de horas trabalhadas — ele só evita que a falta do dia gere hora extra negativa (até o limite da própria falta).
+                        O abono não soma ao total de horas trabalhadas — ele só evita que a falta do dia gere hora extra negativa (até o limite da própria falta). Com {JORNADA_DIARIA_HORAS}h de abono, entrada/saída ficam opcionais.
                       </p>
                     </div>
                   )}
@@ -4797,7 +4799,7 @@ const ControlePonto = () => {
                     </div>
                   </div>
                   <p className="text-xs text-gray-400">
-                    Entrada e Saída são obrigatórios{resolveTemAtestado ? ` (exceto com ${JORNADA_DIARIA_HORAS}h de atestado)` : ''}. Intervalo é opcional, mas se preencher um lado, precisa preencher o outro.
+                    Entrada e Saída são obrigatórios{resolveTemAtestado || resolveTemAbono ? ` (exceto com ${JORNADA_DIARIA_HORAS}h de ${resolveTemAtestado ? 'atestado' : 'abono'})` : ''}. Intervalo é opcional, mas se preencher um lado, precisa preencher o outro.
                   </p>
                 </>
               )}

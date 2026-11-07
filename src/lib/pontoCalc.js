@@ -115,6 +115,15 @@ export const getDayMetrics = (dateStr, allRecords, atestado = null, feriado = nu
     }
   }
 
+  // Abono integral (>= jornada) em dia sem nenhuma marcação: o dia fica
+  // justificado, com 0h trabalhadas (o abono não soma horas, só anula a falta
+  // abaixo). Abono parcial sem marcações NÃO resolve o dia: continua como
+  // "sem-registro" (inconsistência de dia útil sem marcação).
+  if (!atestado && abono && status === 'sem-registro' && abono.hours >= JORNADA_DIARIA_HORAS) {
+    status = 'completo';
+    horasTrabalhadas = 0;
+  }
+
   let horasExtras = horasTrabalhadas !== null ? horasTrabalhadas - JORNADA_DIARIA_HORAS : null;
 
   // Havendo atestado médico (de qualquer quantidade de horas), a hora extra
